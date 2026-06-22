@@ -29,9 +29,12 @@ const POINTS: GlobePoint[] = [
 ];
 
 const INLINE_MAX_PX = 720; // 1.5x the previous 480px inline cap
-const FOCUSED_VW = 0.9;
-const FOCUSED_VH = 0.7; // also cap by viewport height so it never overflows on short screens
-const FOCUSED_MAX_PX = 1080; // 1.5x the previous 720px focused cap
+// 1.3x the previous focused box — markers that sit close together on the
+// sphere end up farther apart in screen pixels, so the smaller one behind
+// is still individually clickable instead of being swallowed by its neighbor.
+const FOCUSED_VW = 1.0;
+const FOCUSED_VH = 0.91; // also cap by viewport height so it never overflows on short screens
+const FOCUSED_MAX_PX = 1404; // 1.3x the previous 1080px focused cap
 const FOCUSED_SIZE_CSS = `min(${FOCUSED_VW * 100}vw, ${FOCUSED_VH * 100}vh, ${FOCUSED_MAX_PX}px)`;
 const ROTATE_PAUSE_MS = 10_000;
 // Initial tilt, and what it resets to when leaving focused mode. While
