@@ -34,12 +34,46 @@ const FOCUSED_VH = 0.7; // also cap by viewport height so it never overflows on 
 const FOCUSED_MAX_PX = 1080; // 1.5x the previous 720px focused cap
 const FOCUSED_SIZE_CSS = `min(${FOCUSED_VW * 100}vw, ${FOCUSED_VH * 100}vh, ${FOCUSED_MAX_PX}px)`;
 const ZOOM_MIN = 1;
-const ZOOM_MAX = 2.6;
+const ZOOM_MAX = 2.8;
 const ROTATE_PAUSE_MS = 10_000;
+// Initial tilt, and what it resets to when leaving focused mode. While
+// focused, vertical drag adjusts this live (see `thetaRef`).
+const BASE_THETA = 0.25;
+const THETA_MIN = -1.3;
+const THETA_MAX = 1.3;
+// Matches cobe's own marker radius (its internal 0.8 surface constant plus
+// the default 0.05 markerElevation), so our DOM pins land exactly on the
+// surface the WebGL globe renders, not floating above/below it.
+const MARKER_RADIUS = 0.85;
+
+function clamp(v: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, v));
+}
 
 function focusedSizeNow(): number {
   if (typeof window === 'undefined') return FOCUSED_MAX_PX;
   return Math.min(window.innerWidth * FOCUSED_VW, window.innerHeight * FOCUSED_VH, FOCUSED_MAX_PX);
+}
+
+/** Re-implements cobe's own lat/lng -> rotated screen-space projection (read
+ * out of its source) so the HTML marker pins line up with where the WebGL
+ * globe is actually rendering each point, frame by frame. Assumes a square
+ * canvas, camera scale 1, and no offset — all true here. */
+function projectMarker(lat: number, lng: number, phi: number, theta: number) {
+  const latRad = (lat * Math.PI) / 180;
+  const lngRad = (lng * Math.PI) / 180 - Math.PI;
+  const cosLat = Math.cos(latRad);
+  const x = -cosLat * Math.cos(lngRad) * MARKER_RADIUS;
+  const y = Math.sin(latRad) * MARKER_RADIUS;
+  const z = cosLat * Math.sin(lngRad) * MARKER_RADIUS;
+  const cosT = Math.cos(theta);
+  const sinT = Math.sin(theta);
+  const cosP = Math.cos(phi);
+  const sinP = Math.sin(phi);
+  const c = cosP * x + sinP * z;
+  const s = sinP * sinT * x + cosT * y - cosP * sinT * z;
+  const front = -sinP * cosT * x + sinT * y + cosP * cosT * z >= 0;
+  return { nx: (c + 1) / 2, ny: (-s + 1) / 2, front };
 }
 
 // Small, muted dots for the rest of the globe; the active destination gets a
@@ -63,22 +97,31 @@ interface CobeGlobeProps {
    * frame, so the WebGL backing buffer isn't reallocated while the globe is
    * mid-transition. That per-frame reallocation was the source of the lag. */
   bufferSize: number;
+  /** Navigate to a destination — wired to the marker pins, only relevant
+   * once focused (the pins don't render in inline mode). */
+  onSelect: (id: string) => void;
 }
 
 /** A self-contained spinning cobe planet. A single instance is reused for both
  * the inline and focused layouts — Framer Motion's layout animation handles
  * the smooth move-and-grow between them while this canvas just visually
  * scales via CSS during the transition. */
-function CobeGlobe({ activeIndex, interactive, bufferSize }: CobeGlobeProps) {
+function CobeGlobe({ activeIndex, interactive, bufferSize, onSelect }: CobeGlobeProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const phiRef = useRef(0);
-  const sizeRef = useRef(bufferSize);
+  const thetaRef = useRef(BASE_THETA);
+  const sizeRef = useRef(bufferSize); // settled layout size at zoom 1 (CSS px)
+  // Zoom grows the actual rendered globe (canvas + its container) past the
+  // settled layout box — nothing clips it, so it never gets cropped at the
+  // edges the way scaling cobe's internal camera used to.
   const scaleRef = useRef(1); // zoom level, 1..ZOOM_MAX
-  const draggingRef = useRef<number | null>(null);
+  const draggingRef = useRef<{ x: number; y: number } | null>(null);
   const pauseUntilRef = useRef(0); // epoch ms; auto-rotate paused until this time (focused mode only)
   const activeRef = useRef(activeIndex);
   const interactiveRef = useRef(interactive);
   const cursorRef = useRef<HTMLCanvasElement | null>(null);
+  const markerWrapRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const markerDotRefs = useRef<(HTMLSpanElement | null)[]>([]);
 
   useEffect(() => {
     activeRef.current = activeIndex;
@@ -88,11 +131,22 @@ function CobeGlobe({ activeIndex, interactive, bufferSize }: CobeGlobeProps) {
   }, [bufferSize]);
   useEffect(() => {
     interactiveRef.current = interactive;
-    // Leaving focused mode: reset zoom and any pending rotate-pause so the
-    // small inline globe always spins freely, unaffected by prior dragging.
+    const container = containerRef.current;
     if (!interactive) {
+      // Leaving focused mode: reset zoom/tilt and any pending rotate-pause
+      // so the small inline globe always spins freely at its settled size,
+      // unaffected by prior dragging.
       scaleRef.current = 1;
+      thetaRef.current = BASE_THETA;
       pauseUntilRef.current = 0;
+      if (container) {
+        container.style.width = '';
+        container.style.height = '';
+      }
+    } else if (container) {
+      const size = sizeRef.current * scaleRef.current;
+      container.style.width = `${size}px`;
+      container.style.height = `${size}px`;
     }
     if (cursorRef.current) {
       cursorRef.current.style.cursor = interactive ? 'grab' : 'pointer';
@@ -125,7 +179,7 @@ function CobeGlobe({ activeIndex, interactive, bufferSize }: CobeGlobeProps) {
       width: sizeRef.current * dpr,
       height: sizeRef.current * dpr,
       phi: 0,
-      theta: 0.25,
+      theta: BASE_THETA,
       dark: 1,
       diffuse: 1.2,
       mapSamples: 14000,
@@ -143,20 +197,48 @@ function CobeGlobe({ activeIndex, interactive, bufferSize }: CobeGlobeProps) {
       const shouldSpin = draggingRef.current === null && (!interactiveRef.current || now >= pauseUntilRef.current);
       if (shouldSpin) phiRef.current += 0.004;
 
-      const zoom = scaleRef.current;
+      const zoom = interactiveRef.current ? scaleRef.current : 1;
+      const size = sizeRef.current * zoom;
+
+      if (interactiveRef.current) {
+        const container = containerRef.current;
+        if (container) {
+          container.style.width = `${size}px`;
+          container.style.height = `${size}px`;
+        }
+      }
+
       globe.update({
         phi: phiRef.current,
-        width: sizeRef.current * dpr,
-        height: sizeRef.current * dpr,
-        scale: zoom,
-        // Denser, brighter sampling as you zoom in — the closest cobe gets to
-        // "sharper borders": it renders landmasses as a dot texture rather
-        // than vector country outlines, so zooming increases dot density and
-        // contrast instead of revealing literal border lines.
-        mapSamples: Math.round(14000 + (zoom - 1) * 9000),
-        mapBrightness: 4.2 + (zoom - 1) * 1.4,
-        markers: markersFor(activeRef.current),
+        theta: thetaRef.current,
+        width: size * dpr,
+        height: size * dpr,
+        // Camera scale always 1 — the zoom is real (the canvas itself grows
+        // above), not a camera trick, so nothing here ever clips at the
+        // canvas edge.
+        scale: 1,
+        // Denser, brighter sampling as you zoom in, so coastlines read as
+        // crisp dotted borders instead of a coarse blur at max zoom — the
+        // closest cobe gets to literal vector country borders.
+        mapSamples: Math.round(14000 + (zoom - 1) * 16000),
+        mapBrightness: 4.2 + (zoom - 1) * 1.8,
+        // While focused, the WebGL dots are hidden in favour of the
+        // hoverable/clickable DOM pins positioned below; inline mode keeps
+        // the small cycling-highlight dots as before.
+        markers: interactiveRef.current ? [] : markersFor(activeRef.current),
       });
+
+      if (interactiveRef.current) {
+        POINTS.forEach((p, i) => {
+          const wrap = markerWrapRefs.current[i];
+          if (!wrap) return;
+          const { nx, ny, front } = projectMarker(p.location[0], p.location[1], phiRef.current, thetaRef.current);
+          wrap.style.transform = `translate(${nx * size}px, ${ny * size}px)`;
+          wrap.style.opacity = front ? '1' : '0';
+          wrap.style.pointerEvents = front ? 'auto' : 'none';
+        });
+      }
+
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -164,9 +246,12 @@ function CobeGlobe({ activeIndex, interactive, bufferSize }: CobeGlobeProps) {
       canvas.style.opacity = '1';
     }, 120);
 
-    // Wheel/pinch zoom, Google-Earth style. Attached as a native listener
-    // (not React's onWheel) so preventDefault works — React binds wheel
-    // handlers as passive by default, which would silently ignore it.
+    // Wheel/pinch zoom grows the planet itself (Google-Earth style), without
+    // cropping — see the tick loop above, which grows the actual canvas/
+    // container rather than scaling cobe's internal camera. Attached as a
+    // native listener (not React's onWheel) so preventDefault works — React
+    // binds wheel handlers as passive by default, which would silently
+    // ignore it.
     const onWheel = (e: WheelEvent) => {
       if (!interactiveRef.current) return;
       e.preventDefault();
@@ -182,7 +267,7 @@ function CobeGlobe({ activeIndex, interactive, bufferSize }: CobeGlobeProps) {
     // is created imperatively above.
     const onPointerDown = (e: PointerEvent) => {
       if (!interactiveRef.current) return;
-      draggingRef.current = e.clientX;
+      draggingRef.current = { x: e.clientX, y: e.clientY };
       canvas.setPointerCapture(e.pointerId);
       canvas.style.cursor = 'grabbing';
     };
@@ -198,9 +283,11 @@ function CobeGlobe({ activeIndex, interactive, bufferSize }: CobeGlobeProps) {
     };
     const onPointerMove = (e: PointerEvent) => {
       if (!interactiveRef.current || draggingRef.current === null) return;
-      const dx = e.clientX - draggingRef.current;
-      draggingRef.current = e.clientX;
+      const dx = e.clientX - draggingRef.current.x;
+      const dy = e.clientY - draggingRef.current.y;
+      draggingRef.current = { x: e.clientX, y: e.clientY };
       phiRef.current += dx * 0.005;
+      thetaRef.current = clamp(thetaRef.current - dy * 0.005, THETA_MIN, THETA_MAX);
     };
     const onClickCapture = (e: MouseEvent) => {
       // Swallow any trailing click after a drag so it can't trigger handlers
@@ -226,7 +313,63 @@ function CobeGlobe({ activeIndex, interactive, bufferSize }: CobeGlobeProps) {
     };
   }, []);
 
-  return <div ref={containerRef} className="size-full" style={{ contain: 'layout paint size' }} />;
+  return (
+    <div
+      ref={containerRef}
+      className={
+        interactive
+          // Explicit width/height (set imperatively above, grown on zoom)
+          // centered on the settled box, intentionally NOT clipped — no
+          // `overflow`/`contain` here, so the planet can grow past its
+          // original footprint instead of being cropped at its edge.
+          ? 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2'
+          : 'size-full'
+      }
+      style={interactive ? undefined : { contain: 'layout paint size' }}
+    >
+      {interactive && (
+        <div className="pointer-events-none absolute inset-0">
+          {POINTS.map((p, i) => (
+            <div
+              key={p.id}
+              ref={(el) => {
+                markerWrapRefs.current[i] = el;
+              }}
+              className="absolute left-0 top-0"
+            >
+              {/* Position (translate) is driven imperatively every frame above;
+                  this inner element only handles the static centering offset
+                  so it doesn't fight the per-frame transform. */}
+              <div className="relative -translate-x-1/2 -translate-y-1/2">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSelect(p.id);
+                  }}
+                  className="group block p-1.5"
+                  aria-label={`${p.city}, ${p.country} — from ${formatMoney(p.price)}`}
+                >
+                  <span
+                    ref={(el) => {
+                      markerDotRefs.current[i] = el;
+                    }}
+                    className="block size-2.5 rounded-full bg-accent shadow-[0_0_0_3px_rgba(255,255,255,0.3)] transition-shadow group-hover:shadow-[0_0_0_4px_rgba(255,255,255,0.5)]"
+                  />
+                  <div className="pointer-events-none absolute bottom-full left-1/2 mb-2 w-40 -translate-x-1/2 scale-90 rounded-xl border border-line bg-surface/95 p-2 text-left opacity-0 shadow-lift backdrop-blur transition-all duration-150 group-hover:scale-100 group-hover:opacity-100">
+                    <Photo src={p.image} alt={p.city} className="aspect-[4/3] w-full rounded-lg" sizes="160px" />
+                    <p className="mt-1.5 font-serif text-sm leading-tight text-ink">{p.city}</p>
+                    <p className="text-[11px] text-ink-3">{p.country}</p>
+                    <p className="text-xs font-medium text-accent">from {formatMoney(p.price)}</p>
+                  </div>
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function HeroGlobe() {
@@ -342,7 +485,7 @@ export function HeroGlobe() {
             background: 'radial-gradient(circle at center, rgb(var(--color-accent)/0.18), transparent 62%)',
           }}
         />
-        <CobeGlobe activeIndex={activeIndex} interactive={focused} bufferSize={bufferSize} />
+        <CobeGlobe activeIndex={activeIndex} interactive={focused} bufferSize={bufferSize} onSelect={go} />
 
         {/* cycling destination card — only while inline; the focused chip menu replaces it */}
         <AnimatePresence mode="wait">
@@ -414,7 +557,7 @@ export function HeroGlobe() {
             exit={{ opacity: 0 }}
             transition={{ duration: 0.3, delay: 0.2 }}
           >
-            Drag to spin · scroll to zoom · pick a place to plan it
+            Drag to spin, up/down to tilt · scroll to zoom in · hover a pin for details
           </motion.p>
         )}
       </AnimatePresence>
