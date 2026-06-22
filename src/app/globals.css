@@ -1,0 +1,108 @@
+@import '../styles/tokens.css';
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-bg font-sans text-ink antialiased;
+    font-feature-settings: 'kern', 'liga';
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply font-serif text-balance;
+  }
+
+  ::selection {
+    @apply bg-accent/20 text-ink;
+  }
+
+  :focus-visible {
+    @apply outline-none ring-2 ring-accent/60 ring-offset-2 ring-offset-bg;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .text-pretty {
+    text-wrap: pretty;
+  }
+}
+
+/* Brand 3D globe loader */
+.yl-globe {
+  display: grid;
+  place-items: center;
+  perspective: 340px;
+}
+.yl-globe__sphere {
+  position: relative;
+  width: 74%;
+  height: 74%;
+  border-radius: 50%;
+  transform-style: preserve-3d;
+  background: radial-gradient(
+    circle at 32% 28%,
+    rgb(var(--color-accent) / 0.22),
+    rgb(var(--color-accent) / 0.05) 58%,
+    transparent 70%
+  );
+  animation: yl-globe-spin 5.5s linear infinite;
+}
+.yl-globe__ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1.5px solid rgb(var(--color-accent) / 0.55);
+  transform-style: preserve-3d;
+}
+.yl-globe__ring:nth-child(1) {
+  transform: rotateY(0deg);
+}
+.yl-globe__ring:nth-child(2) {
+  transform: rotateY(60deg);
+}
+.yl-globe__ring:nth-child(3) {
+  transform: rotateY(120deg);
+}
+.yl-globe__ring--equator {
+  border-color: rgb(var(--color-accent) / 0.3);
+  transform: rotateX(80deg);
+}
+.yl-globe__core {
+  position: absolute;
+  inset: 39%;
+  border-radius: 50%;
+  background: rgb(var(--color-accent) / 0.85);
+  box-shadow: 0 0 12px rgb(var(--color-accent) / 0.5);
+}
+@keyframes yl-globe-spin {
+  from {
+    transform: rotateX(-14deg) rotateY(0deg);
+  }
+  to {
+    transform: rotateX(-14deg) rotateY(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

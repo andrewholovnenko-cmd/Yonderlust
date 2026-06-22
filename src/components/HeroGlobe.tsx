@@ -1,0 +1,440 @@
+'use client';
+
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+import { useRouter } from 'next/navigation';
+import createGlobe from 'cobe';
+import { X } from 'lucide-react';
+import { Photo } from '@/components/ui/Photo';
+import { cn, formatMoney } from '@/lib/utils';
+
+interface GlobePoint {
+  id: string;
+  city: string;
+  country: string;
+  price: number;
+  image: string;
+  location: [number, number]; // [lat, lng]
+}
+
+const POINTS: GlobePoint[] = [
+  { id: 'kotor', city: 'Kotor', country: 'Montenegro', price: 1380, location: [42.42, 18.77], image: 'https://picsum.photos/seed/yl-kotor/240/240' },
+  { id: 'split', city: 'Split', country: 'Croatia', price: 1420, location: [43.51, 16.44], image: 'https://picsum.photos/seed/yl-split/240/240' },
+  { id: 'naxos', city: 'Naxos', country: 'Greece', price: 1620, location: [37.1, 25.38], image: 'https://picsum.photos/seed/yl-naxos/240/240' },
+  { id: 'athens', city: 'Athens', country: 'Greece', price: 1480, location: [37.98, 23.73], image: 'https://picsum.photos/seed/yl-athens/240/240' },
+  { id: 'valletta', city: 'Valletta', country: 'Malta', price: 1280, location: [35.9, 14.51], image: 'https://picsum.photos/seed/yl-valletta/240/240' },
+  { id: 'lisbon', city: 'Lisbon', country: 'Portugal', price: 1550, location: [38.72, -9.14], image: 'https://picsum.photos/seed/yl-lisbon/240/240' },
+  { id: 'funchal', city: 'Funchal', country: 'Madeira', price: 1840, location: [32.66, -16.92], image: 'https://picsum.photos/seed/yl-funchal/240/240' },
+  { id: 'tirana', city: 'Tirana', country: 'Albania', price: 1020, location: [41.33, 19.82], image: 'https://picsum.photos/seed/yl-tirana/240/240' },
+];
+
+const INLINE_MAX_PX = 720; // 1.5x the previous 480px inline cap
+const FOCUSED_VW = 0.9;
+const FOCUSED_VH = 0.7; // also cap by viewport height so it never overflows on short screens
+const FOCUSED_MAX_PX = 1080; // 1.5x the previous 720px focused cap
+const FOCUSED_SIZE_CSS = `min(${FOCUSED_VW * 100}vw, ${FOCUSED_VH * 100}vh, ${FOCUSED_MAX_PX}px)`;
+const ZOOM_MIN = 1;
+const ZOOM_MAX = 2.6;
+const ROTATE_PAUSE_MS = 10_000;
+
+function focusedSizeNow(): number {
+  if (typeof window === 'undefined') return FOCUSED_MAX_PX;
+  return Math.min(window.innerWidth * FOCUSED_VW, window.innerHeight * FOCUSED_VH, FOCUSED_MAX_PX);
+}
+
+// Small, muted dots for the rest of the globe; the active destination gets a
+// noticeably bigger, brighter marker so the highlight reads clearly at a glance.
+function markersFor(active: number) {
+  return POINTS.map((p, i) => {
+    const isActive = i === active;
+    return {
+      location: p.location,
+      size: isActive ? 0.085 : 0.028,
+      color: (isActive ? [0.66, 0.98, 0.9] : [0.3, 0.58, 0.53]) as [number, number, number],
+    };
+  });
+}
+
+interface CobeGlobeProps {
+  activeIndex: number;
+  interactive: boolean;
+  /** CSS px the canvas is currently displayed at — only changes at discrete
+   * moments (focus toggle settled, real viewport resize), never per animation
+   * frame, so the WebGL backing buffer isn't reallocated while the globe is
+   * mid-transition. That per-frame reallocation was the source of the lag. */
+  bufferSize: number;
+}
+
+/** A self-contained spinning cobe planet. A single instance is reused for both
+ * the inline and focused layouts — Framer Motion's layout animation handles
+ * the smooth move-and-grow between them while this canvas just visually
+ * scales via CSS during the transition. */
+function CobeGlobe({ activeIndex, interactive, bufferSize }: CobeGlobeProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const phiRef = useRef(0);
+  const sizeRef = useRef(bufferSize);
+  const scaleRef = useRef(1); // zoom level, 1..ZOOM_MAX
+  const draggingRef = useRef<number | null>(null);
+  const pauseUntilRef = useRef(0); // epoch ms; auto-rotate paused until this time (focused mode only)
+  const activeRef = useRef(activeIndex);
+  const interactiveRef = useRef(interactive);
+  const cursorRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    activeRef.current = activeIndex;
+  }, [activeIndex]);
+  useEffect(() => {
+    sizeRef.current = bufferSize;
+  }, [bufferSize]);
+  useEffect(() => {
+    interactiveRef.current = interactive;
+    // Leaving focused mode: reset zoom and any pending rotate-pause so the
+    // small inline globe always spins freely, unaffected by prior dragging.
+    if (!interactive) {
+      scaleRef.current = 1;
+      pauseUntilRef.current = 0;
+    }
+    if (cursorRef.current) {
+      cursorRef.current.style.cursor = interactive ? 'grab' : 'pointer';
+    }
+  }, [interactive]);
+
+  // cobe mutates the DOM on mount — it inserts its own wrapper <div> around
+  // the canvas and moves the canvas inside it, and never undoes that on
+  // destroy(). If React tracked the <canvas> as a JSX child, its later
+  // removeChild call (StrictMode's dev double-invoke, or a real unmount)
+  // throws because the canvas's actual parent silently changed underneath
+  // it. So the canvas is created and torn down imperatively here, fully
+  // outside React's reconciliation — cleanup uses `canvas.remove()`, which
+  // removes it from whatever its real parent is, instead of a `removeChild`
+  // call that assumes a parent React no longer controls.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const canvas = document.createElement('canvas');
+    canvas.className = 'size-full opacity-0 transition-opacity duration-500';
+    canvas.style.cursor = interactiveRef.current ? 'grab' : 'pointer';
+    canvas.style.touchAction = 'none';
+    container.appendChild(canvas);
+    cursorRef.current = canvas;
+
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+    const globe = createGlobe(canvas, {
+      devicePixelRatio: dpr,
+      width: sizeRef.current * dpr,
+      height: sizeRef.current * dpr,
+      phi: 0,
+      theta: 0.25,
+      dark: 1,
+      diffuse: 1.2,
+      mapSamples: 14000,
+      mapBrightness: 4.2,
+      baseColor: [0.09, 0.2, 0.18],
+      markerColor: [0.36, 0.85, 0.75],
+      glowColor: [0.12, 0.32, 0.3],
+      markers: markersFor(activeRef.current),
+      scale: 1,
+    });
+
+    let raf = 0;
+    const tick = () => {
+      const now = Date.now();
+      const shouldSpin = draggingRef.current === null && (!interactiveRef.current || now >= pauseUntilRef.current);
+      if (shouldSpin) phiRef.current += 0.004;
+
+      const zoom = scaleRef.current;
+      globe.update({
+        phi: phiRef.current,
+        width: sizeRef.current * dpr,
+        height: sizeRef.current * dpr,
+        scale: zoom,
+        // Denser, brighter sampling as you zoom in — the closest cobe gets to
+        // "sharper borders": it renders landmasses as a dot texture rather
+        // than vector country outlines, so zooming increases dot density and
+        // contrast instead of revealing literal border lines.
+        mapSamples: Math.round(14000 + (zoom - 1) * 9000),
+        mapBrightness: 4.2 + (zoom - 1) * 1.4,
+        markers: markersFor(activeRef.current),
+      });
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    const reveal = window.setTimeout(() => {
+      canvas.style.opacity = '1';
+    }, 120);
+
+    // Wheel/pinch zoom, Google-Earth style. Attached as a native listener
+    // (not React's onWheel) so preventDefault works — React binds wheel
+    // handlers as passive by default, which would silently ignore it.
+    const onWheel = (e: WheelEvent) => {
+      if (!interactiveRef.current) return;
+      e.preventDefault();
+      const delta = -e.deltaY * 0.0015;
+      scaleRef.current = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, scaleRef.current + delta));
+    };
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+
+    // Pointer capture keeps drag events routed to the canvas even once the
+    // cursor leaves its bounds, so spinning past the planet's edge doesn't
+    // drop the drag (and doesn't let a stray "click" reach anything behind
+    // it). Native listeners (rather than JSX props) since the canvas itself
+    // is created imperatively above.
+    const onPointerDown = (e: PointerEvent) => {
+      if (!interactiveRef.current) return;
+      draggingRef.current = e.clientX;
+      canvas.setPointerCapture(e.pointerId);
+      canvas.style.cursor = 'grabbing';
+    };
+    const onPointerUp = (e: PointerEvent) => {
+      if (!interactiveRef.current) return;
+      draggingRef.current = null;
+      // Stay paused for at least 10s after the user lets go of a manual spin.
+      pauseUntilRef.current = Date.now() + ROTATE_PAUSE_MS;
+      if (canvas.hasPointerCapture(e.pointerId)) {
+        canvas.releasePointerCapture(e.pointerId);
+      }
+      canvas.style.cursor = 'grab';
+    };
+    const onPointerMove = (e: PointerEvent) => {
+      if (!interactiveRef.current || draggingRef.current === null) return;
+      const dx = e.clientX - draggingRef.current;
+      draggingRef.current = e.clientX;
+      phiRef.current += dx * 0.005;
+    };
+    const onClickCapture = (e: MouseEvent) => {
+      // Swallow any trailing click after a drag so it can't trigger handlers
+      // on elements layered behind/around the canvas.
+      if (interactiveRef.current) e.stopPropagation();
+    };
+    canvas.addEventListener('pointerdown', onPointerDown);
+    canvas.addEventListener('pointerup', onPointerUp);
+    canvas.addEventListener('pointermove', onPointerMove);
+    canvas.addEventListener('click', onClickCapture, { capture: true });
+
+    return () => {
+      cancelAnimationFrame(raf);
+      globe.destroy();
+      window.clearTimeout(reveal);
+      canvas.removeEventListener('wheel', onWheel);
+      canvas.removeEventListener('pointerdown', onPointerDown);
+      canvas.removeEventListener('pointerup', onPointerUp);
+      canvas.removeEventListener('pointermove', onPointerMove);
+      canvas.removeEventListener('click', onClickCapture, { capture: true });
+      canvas.remove();
+      cursorRef.current = null;
+    };
+  }, []);
+
+  return <div ref={containerRef} className="size-full" style={{ contain: 'layout paint size' }} />;
+}
+
+export function HeroGlobe() {
+  const router = useRouter();
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [focused, setFocused] = useState(false);
+  const [bufferSize, setBufferSize] = useState(INLINE_MAX_PX);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const focusedRef = useRef(false);
+
+  useEffect(() => {
+    focusedRef.current = focused;
+  }, [focused]);
+
+  // Track the inline placeholder's real rendered size. This element never
+  // resizes during the focus transition (it's a static layout placeholder),
+  // so this only fires on genuine responsive breakpoint changes.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const measure = () => {
+      if (!focusedRef.current) setBufferSize(el.getBoundingClientRect().width);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      if (!focusedRef.current) setActiveIndex((a) => (a + 1) % POINTS.length);
+    }, 2600);
+    return () => window.clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    if (!focused) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setFocused(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [focused]);
+
+  const go = useCallback(
+    (id: string) => {
+      setFocused(false);
+      router.push(`/trip/${id}`);
+    },
+    [router],
+  );
+
+  // Bump the WebGL buffer resolution only once the move/grow (or shrink)
+  // animation has actually settled — never mid-flight. During the transition
+  // the canvas just scales visually via CSS, which is cheap; this is what
+  // eliminates the lag that used to come from resizing the buffer every frame.
+  const onLayoutAnimationComplete = useCallback(() => {
+    if (focusedRef.current) {
+      setBufferSize(focusedSizeNow());
+    } else {
+      const el = containerRef.current;
+      if (el) setBufferSize(el.getBoundingClientRect().width);
+    }
+  }, []);
+
+  const active = POINTS[activeIndex];
+
+  return (
+    // Fixed-size placeholder so the page layout never jumps: the globe itself
+    // escapes to `position: fixed` when focused, but this box keeps reserving
+    // its inline footprint in the hero grid.
+    <div ref={containerRef} className="relative mx-auto aspect-square w-full max-w-[720px]">
+      <AnimatePresence>
+        {focused && (
+          <motion.div
+            className="fixed inset-0 z-40 bg-ink/60 backdrop-blur-sm"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.3 }}
+            onClick={() => setFocused(false)}
+          />
+        )}
+      </AnimatePresence>
+
+      <motion.div
+        layout
+        onLayoutAnimationComplete={onLayoutAnimationComplete}
+        transition={{ type: 'spring', stiffness: 210, damping: 24, mass: 0.8 }}
+        onClick={() => {
+          if (!focused) setFocused(true);
+        }}
+        className={cn(focused ? 'fixed z-50 cursor-default' : 'absolute inset-0 z-40 cursor-pointer')}
+        // Centering via calc(), not a translate utility: Framer's `layout`
+        // prop owns the `transform` property for the FLIP animation, so any
+        // transform-based centering trick here would fight it and the globe
+        // would never visually land in the middle of the screen.
+        style={
+          focused
+            ? {
+                width: FOCUSED_SIZE_CSS,
+                height: FOCUSED_SIZE_CSS,
+                left: `calc(50% - (${FOCUSED_SIZE_CSS} / 2))`,
+                top: `calc(50vh - (${FOCUSED_SIZE_CSS} / 2))`,
+              }
+            : undefined
+        }
+      >
+        <div
+          className="pointer-events-none absolute inset-0 -z-10 scale-90 rounded-full blur-2xl"
+          style={{
+            background: 'radial-gradient(circle at center, rgb(var(--color-accent)/0.18), transparent 62%)',
+          }}
+        />
+        <CobeGlobe activeIndex={activeIndex} interactive={focused} bufferSize={bufferSize} />
+
+        {/* cycling destination card — only while inline; the focused chip menu replaces it */}
+        <AnimatePresence mode="wait">
+          {!focused && (
+            <motion.button
+              key={active.id}
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                go(active.id);
+              }}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
+              className="absolute bottom-2 left-0 flex items-center gap-3 rounded-2xl border border-line bg-surface/90 p-2 pr-4 text-left shadow-lift backdrop-blur"
+            >
+              <Photo src={active.image} alt={active.city} className="size-12 shrink-0 rounded-xl" sizes="48px" />
+              <span>
+                <span className="block font-serif text-base leading-tight text-ink">{active.city}</span>
+                <span className="block text-xs text-ink-3">{active.country}</span>
+                <span className="mt-0.5 block text-sm font-medium text-accent">
+                  from {formatMoney(active.price)}
+                </span>
+              </span>
+            </motion.button>
+          )}
+        </AnimatePresence>
+      </motion.div>
+
+      {!focused && (
+        <span className="pointer-events-none absolute -bottom-2 right-0 text-xs text-ink-3">
+          Tap the globe to explore
+        </span>
+      )}
+
+      {/* destination picker — appears once the globe has settled in the centre */}
+      <AnimatePresence>
+        {focused && (
+          <motion.div
+            className="fixed inset-x-6 bottom-10 z-50 flex flex-wrap items-center justify-center gap-2"
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 10 }}
+            transition={{ duration: 0.3, delay: 0.15 }}
+          >
+            {POINTS.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => go(p.id)}
+                className="inline-flex items-center gap-2 rounded-full border border-bg/20 bg-bg/10 py-1.5 pl-1.5 pr-4 text-bg backdrop-blur transition-colors hover:bg-bg/20"
+              >
+                <Photo src={p.image} alt={p.city} className="size-7 shrink-0 rounded-full" sizes="28px" />
+                <span className="text-sm font-medium">{p.city}</span>
+                <span className="text-sm text-bg/70">{formatMoney(p.price)}</span>
+              </button>
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {focused && (
+          <motion.p
+            className="fixed bottom-24 left-1/2 z-50 -translate-x-1/2 text-sm text-bg/70"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.3, delay: 0.2 }}
+          >
+            Drag to spin · scroll to zoom · pick a place to plan it
+          </motion.p>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {focused && (
+          <motion.button
+            type="button"
+            onClick={() => setFocused(false)}
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.8 }}
+            transition={{ duration: 0.25 }}
+            className="fixed right-6 top-6 z-50 grid size-10 place-items-center rounded-full bg-surface/90 text-ink shadow-soft backdrop-blur transition-colors hover:bg-surface"
+            aria-label="Close"
+          >
+            <X className="size-5" />
+          </motion.button>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}

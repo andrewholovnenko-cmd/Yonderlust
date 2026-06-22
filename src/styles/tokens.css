@@ -1,0 +1,35 @@
+/**
+ * Yonderlust design tokens.
+ * Single source of truth for color, radius, shadow and motion.
+ * Colors are stored as space-separated RGB channels so Tailwind can apply
+ * opacity, e.g. `text-ink/60` -> rgb(var(--color-ink) / 0.6).
+ */
+:root {
+  /* ---- Color ---- */
+  --color-bg: 248 245 238; /* warm ivory */
+  --color-surface: 255 254 250; /* raised card */
+  --color-surface-2: 242 238 229; /* subtle panel */
+  --color-ink: 23 21 18; /* near-black, warm */
+  --color-ink-2: 74 69 62; /* secondary text */
+  --color-ink-3: 132 125 115; /* muted / captions */
+  --color-line: 226 220 209; /* hairline borders */
+  --color-accent: 13 104 95; /* deep teal */
+  --color-accent-strong: 9 76 69; /* teal hover / pressed */
+  --color-accent-foreground: 248 245 238; /* text on teal */
+  --color-danger: 178 58 47; /* over-budget */
+
+  /* ---- Radius ---- */
+  --radius: 18px;
+
+  /* ---- Shadows (soft, editorial) ---- */
+  --shadow-soft: 0 1px 2px rgb(23 21 18 / 0.04), 0 8px 24px -12px rgb(23 21 18 / 0.12);
+  --shadow-lift: 0 2px 6px rgb(23 21 18 / 0.06), 0 24px 50px -22px rgb(23 21 18 / 0.24);
+  --shadow-ring: 0 0 0 1px rgb(23 21 18 / 0.06);
+
+  /* ---- Motion ---- */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur-fast: 150ms;
+  --dur-base: 240ms;
+  --dur-slow: 420ms;
+}
