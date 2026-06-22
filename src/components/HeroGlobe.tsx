@@ -73,8 +73,55 @@ function projectMarker(lat: number, lng: number, phi: number, theta: number) {
   const sinP = Math.sin(phi);
   const c = cosP * x + sinP * z;
   const s = sinP * sinT * x + cosT * y - cosP * sinT * z;
-  const front = -sinP * cosT * x + sinT * y + cosP * cosT * z >= 0;
-  return { nx: (c + 1) / 2, ny: (-s + 1) / 2, front };
+  // How far toward the viewer this point sits (same quantity used for the
+  // front/back visibility test). When two pins land close together on
+  // screen, the one with the larger depth is physically nearer the camera
+  // and should win clicks/hover, instead of whichever happens to be later
+  // in the marker list.
+  const depth = -sinP * cosT * x + sinT * y + cosP * cosT * z;
+  return { nx: (c + 1) / 2, ny: (-s + 1) / 2, front: depth >= 0, depth };
+}
+
+// Minimum on-screen gap (px) kept between two pin centers. Two destinations
+// that sit close together on the actual sphere can land within a few pixels
+// of each other on screen — small enough that one pin's hit area completely
+// swallows the other's, making it physically impossible to click. Nudging
+// overlapping pairs apart (a few quick relaxation passes, like force-directed
+// label placement) keeps every pin individually clickable without otherwise
+// touching pins that already have room.
+const MIN_PIN_GAP = 26;
+
+function declutterPins(pos: { x: number; y: number; front: boolean }[]) {
+  for (let pass = 0; pass < 4; pass++) {
+    for (let i = 0; i < pos.length; i++) {
+      if (!pos[i].front) continue;
+      for (let j = i + 1; j < pos.length; j++) {
+        if (!pos[j].front) continue;
+        const a = pos[i];
+        const b = pos[j];
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        let dist = Math.hypot(dx, dy);
+        if (dist >= MIN_PIN_GAP) continue;
+        if (dist < 0.001) {
+          // Exactly coincident — nudge along a deterministic direction based
+          // on index so they don't fight over the same spot every frame.
+          const angle = (i * 47 + j * 19) % 360;
+          dx = Math.cos((angle * Math.PI) / 180);
+          dy = Math.sin((angle * Math.PI) / 180);
+          dist = 1;
+        }
+        const push = (MIN_PIN_GAP - dist) / 2;
+        const ux = (dx / dist) * push;
+        const uy = (dy / dist) * push;
+        a.x -= ux;
+        a.y -= uy;
+        b.x += ux;
+        b.y += uy;
+      }
+    }
+  }
+  return pos;
 }
 
 // Small, muted dots for the rest of the globe; the active destination gets a
@@ -198,13 +245,21 @@ function CobeGlobe({ activeIndex, interactive, bufferSize, onSelect }: CobeGlobe
       });
 
       if (interactiveRef.current) {
-        POINTS.forEach((p, i) => {
+        const projected = POINTS.map((p) => {
+          const { nx, ny, front, depth } = projectMarker(p.location[0], p.location[1], phiRef.current, thetaRef.current);
+          return { x: nx * size, y: ny * size, front, depth };
+        });
+        declutterPins(projected);
+        projected.forEach(({ x, y, front, depth }, i) => {
           const wrap = markerWrapRefs.current[i];
           if (!wrap) return;
-          const { nx, ny, front } = projectMarker(p.location[0], p.location[1], phiRef.current, thetaRef.current);
-          wrap.style.transform = `translate(${nx * size}px, ${ny * size}px)`;
+          wrap.style.transform = `translate(${x}px, ${y}px)`;
           wrap.style.opacity = front ? '1' : '0';
           wrap.style.pointerEvents = front ? 'auto' : 'none';
+          // When two pins still overlap after decluttering, the one
+          // physically nearer the camera should receive the click — not
+          // whichever happens to be later in the DOM.
+          wrap.style.zIndex = String(Math.round(depth * 1000));
         });
       }
 
@@ -289,7 +344,7 @@ function CobeGlobe({ activeIndex, interactive, bufferSize, onSelect }: CobeGlobe
                     e.stopPropagation();
                     onSelect(p.id);
                   }}
-                  className="group block p-1.5"
+                  className="group block p-0.5"
                   aria-label={`${p.city}, ${p.country} — from ${formatMoney(p.price)}`}
                 >
                   <span
