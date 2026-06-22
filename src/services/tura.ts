@@ -513,27 +513,17 @@ const DEFAULT_SAMPLE_QUERY: DiscoverQuery = {
 
 export const liveTripService: TripService = {
   async discoverTrips(query) {
-    try {
-      const response = await callTura(toSearchRequest(query));
-      const ideas = await Promise.all(response.options.map((o) => toTripIdea(o, query)));
-      return rememberAll(ideas);
-    } catch {
-      // tura unreachable (not running, network hiccup, etc.) — degrade to
-      // mock results instead of breaking the Discover page.
-      return mockTripService.discoverTrips(query);
-    }
+    const response = await callTura(toSearchRequest(query));
+    const ideas = await Promise.all(response.options.map((o) => toTripIdea(o, query)));
+    return rememberAll(ideas);
   },
 
   async getSampleIdeas() {
-    try {
-      const response = await callTura(toSearchRequest(DEFAULT_SAMPLE_QUERY));
-      const ideas = await Promise.all(
-        response.options.slice(0, 6).map((o) => toTripIdea(o, DEFAULT_SAMPLE_QUERY)),
-      );
-      return rememberAll(ideas);
-    } catch {
-      return mockTripService.getSampleIdeas();
-    }
+    const response = await callTura(toSearchRequest(DEFAULT_SAMPLE_QUERY));
+    const ideas = await Promise.all(
+      response.options.slice(0, 6).map((o) => toTripIdea(o, DEFAULT_SAMPLE_QUERY)),
+    );
+    return rememberAll(ideas);
   },
 
   async getTripById(id) {
