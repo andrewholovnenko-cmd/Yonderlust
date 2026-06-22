@@ -6,14 +6,6 @@ import type {
   TripService,
 } from './types';
 import {
-  activityListSchema,
-  destinationListSchema,
-  flightSummaryListSchema,
-  staySummaryListSchema,
-  tripDetailSchema,
-  tripIdeaListSchema,
-} from './schemas';
-import {
   activitiesByDestination,
   destinations,
   flightsByDestination,
@@ -147,49 +139,4 @@ export const mockTripService: TripService = {
     await mockLatency(400, 800);
     return flightsByDestination[destinationId] ?? [];
   },
-};
-
-// ── api implementation (env-gated, used when NEXT_PUBLIC_DATA_SOURCE=live) ─────
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? '';
-
-async function getJSON<T>(
-  path: string,
-  schema: { parse: (data: unknown) => T },
-  init?: RequestInit,
-): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    headers: { 'content-type': 'application/json' },
-    ...init,
-  });
-  if (!res.ok) {
-    throw new Error(`Request to ${path} failed with ${res.status}`);
-  }
-  return schema.parse(await res.json());
-}
-
-export const apiTripService: TripService = {
-  discoverTrips: (query) =>
-    getJSON('/discover', tripIdeaListSchema, {
-      method: 'POST',
-      body: JSON.stringify(query),
-    }),
-  getTripById: async (id) => {
-    try {
-      return await getJSON(`/trips/${id}`, tripDetailSchema);
-    } catch {
-      return null;
-    }
-  },
-  listDestinations: () => getJSON('/destinations', destinationListSchema),
-  getSampleIdeas: () => getJSON('/ideas/sample', tripIdeaListSchema),
-  getStays: (destinationId) =>
-    getJSON(`/destinations/${destinationId}/stays`, staySummaryListSchema),
-  getActivities: (destinationId) =>
-    getJSON(`/destinations/${destinationId}/activities`, activityListSchema),
-  getFlights: (origin, destinationId) =>
-    getJSON(
-      `/destinations/${destinationId}/flights?origin=${encodeURIComponent(origin)}`,
-      flightSummaryListSchema,
-    ),
 };
