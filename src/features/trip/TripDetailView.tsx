@@ -22,7 +22,7 @@ import { Stars } from '@/components/ui/Stars';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { buttonClasses } from '@/components/ui/Button';
 import { SaveButton } from '@/features/saved/SaveButton';
-import { formatDateRange, formatDuration, formatMoney } from '@/lib/utils';
+import { formatDateRange, formatDuration, formatMoney, transportIcon } from '@/lib/utils';
 
 const kindIcon: Record<ItineraryItemKind, typeof Plane> = {
   flight: Plane,
@@ -229,12 +229,27 @@ export function TripDetailView({ id }: { id: string }) {
                 {trip.flights.fromCity} ({trip.flights.fromCode}) → {trip.flights.toCity} (
                 {trip.flights.toCode})
               </p>
-              <p className="mt-1 text-sm text-ink-3">
-                {trip.flights.carrier} · {formatDuration(trip.flights.durationMinutes)} ·{' '}
-                {trip.flights.stops === 0
-                  ? 'direct'
-                  : `${trip.flights.stops} stop${trip.flights.stops > 1 ? 's' : ''}`}
-              </p>
+              {trip.flights.legs && trip.flights.legs.length > 1 ? (
+                <div className="mt-1.5 space-y-1">
+                  {trip.flights.legs.map((leg, i) => {
+                    const LegIcon = transportIcon(leg.mode);
+                    return (
+                      <p key={i} className="flex items-center gap-1.5 text-sm text-ink-3">
+                        <LegIcon className="size-3.5" />
+                        {leg.fromCity} → {leg.toCity} · {leg.carrier} ·{' '}
+                        {formatDuration(leg.durationMinutes)}
+                      </p>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="mt-1 text-sm text-ink-3">
+                  {trip.flights.carrier} · {formatDuration(trip.flights.durationMinutes)} ·{' '}
+                  {trip.flights.stops === 0
+                    ? 'direct'
+                    : `${trip.flights.stops} stop${trip.flights.stops > 1 ? 's' : ''}`}
+                </p>
+              )}
             </div>
 
             <div className="rounded-xl border border-line bg-surface p-5">

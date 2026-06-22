@@ -1,5 +1,7 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { Bus, Plane, Train, type LucideIcon } from 'lucide-react';
+import type { TransportMode } from '@/services/types';
 
 /** Merge Tailwind class names with conflict resolution. */
 export function cn(...inputs: ClassValue[]): string {
@@ -47,6 +49,13 @@ export function delay(ms: number): Promise<void> {
 /** Deterministic-ish pseudo delay within a range, for realistic mock latency. */
 export function mockLatency(min = 600, max = 1200): Promise<void> {
   return delay(Math.round(min + Math.random() * (max - min)));
+}
+
+/** Icon for a transport leg: plane for flights, bus/train for ground legs. */
+export function transportIcon(mode: TransportMode): LucideIcon {
+  if (mode === 'bus') return Bus;
+  if (mode === 'train') return Train;
+  return Plane;
 }
 
 /** Minutes to "2h 40m" / "50m" / "3h". */

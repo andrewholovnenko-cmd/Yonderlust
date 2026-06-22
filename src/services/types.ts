@@ -60,6 +60,16 @@ export interface StaySummary {
   image: string;
 }
 
+export type TransportMode = 'flight' | 'bus' | 'train';
+
+export interface TransportLegSummary {
+  mode: TransportMode;
+  fromCity: string;
+  toCity: string;
+  carrier: string;
+  durationMinutes: number;
+}
+
 export interface FlightSummary {
   fromCode: string;
   toCode: string;
@@ -71,6 +81,9 @@ export interface FlightSummary {
   stops: number;
   /** Round trip, per person. */
   price: Money;
+  /** Outbound leg breakdown, e.g. [bus, flight] for a multimodal route.
+   * Omitted for plain mock data, which is always a single direct flight. */
+  legs?: TransportLegSummary[];
 }
 
 export interface CostBreakdown {

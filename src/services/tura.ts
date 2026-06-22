@@ -1,10 +1,10 @@
 // ── tura adapter ──────────────────────────────────────────────────────────
-// `tura` is a friend's separate Next.js project: a destination-picking
-// search engine ("где дешевле" — direct flight vs bus-to-a-lowcost-hub
-// combos), reachable through our same-origin proxy at /api/tura/search (see
+// `tura` is a friend's destination-picking search engine ("где дешевле" —
+// direct flight vs bus-to-a-lowcost-hub combos), vendored in-process at
+// src/lib/tura and called through /api/tura/search (see
 // src/app/api/tura/search/route.ts). Its request/response shapes are
-// completely different from ours (see lib/types.ts in that repo), so this
-// file is the translation layer: only `discoverTrips`/`getSampleIdeas` are
+// completely different from ours (see src/lib/tura/types.ts), so this file
+// is the translation layer: only `discoverTrips`/`getSampleIdeas` are
 // tura-backed (that's its actual value — picking *where*); everything else
 // (destinations list, manual stays/activities/flights, trip detail) has no
 // equivalent in tura yet and falls back to the existing mock content.
@@ -14,6 +14,7 @@ import type {
   FlightSummary,
   Money,
   StaySummary,
+  TransportLegSummary,
   TripDetail,
   TripIdea,
   TripService,
@@ -144,6 +145,100 @@ const TURA_DESTINATION_EN: Record<string, { city: string; country: string; regio
   TGD: { city: 'Podgorica', country: 'Montenegro', region: 'Adriatic coast' },
 };
 
+/** English city names for every code that can show up in a leg (destinations,
+ * ground hubs, common origins) — tura's own cityName() is Russian-language. */
+const CITY_EN: Record<string, string> = {
+  BCN: 'Barcelona',
+  LIS: 'Lisbon',
+  ATH: 'Athens',
+  FCO: 'Rome',
+  PMI: 'Palma de Mallorca',
+  SPU: 'Split',
+  BUD: 'Budapest',
+  PRG: 'Prague',
+  NAP: 'Naples',
+  VLC: 'Valencia',
+  OPO: 'Porto',
+  CTA: 'Catania',
+  KRK: 'Krakow',
+  TIA: 'Tirana',
+  SOF: 'Sofia',
+  TGD: 'Podgorica',
+  BER: 'Berlin',
+  WAW: 'Warsaw',
+  VIE: 'Vienna',
+  MUC: 'Munich',
+  BTS: 'Bratislava',
+  WRO: 'Wroclaw',
+  KTW: 'Katowice',
+  POZ: 'Poznan',
+  BGY: 'Bergamo',
+};
+
+function cityEn(code: string, fallback: string): string {
+  return CITY_EN[code.toUpperCase()] ?? fallback;
+}
+
+/** Wikipedia article titles for a representative, vibe-matching landmark per
+ * destination — used to pull a real photo instead of a random placeholder
+ * (e.g. culture in Rome -> the Colosseum, beach in Mallorca -> Platja de Palma). */
+const LANDMARK_TOPICS: Record<string, Partial<Record<Exclude<TuraVibe, 'any'>, string>>> = {
+  BCN: { history: 'Sagrada Família', city: 'Barcelona', beach: 'Barceloneta Beach', party: 'La Rambla' },
+  LIS: { history: 'Belém Tower', city: 'Lisbon', beach: 'Cascais' },
+  ATH: { history: 'Acropolis of Athens', city: 'Athens', beach: 'Glyfada' },
+  FCO: { history: 'Colosseum', city: 'Rome' },
+  PMI: { history: 'Palma Cathedral', beach: 'Platja de Palma', party: 'Magaluf', city: 'Palma de Mallorca' },
+  SPU: { history: "Diocletian's Palace", beach: 'Bačvice Beach', nature: 'Marjan', city: 'Split, Croatia' },
+  BUD: { history: 'Hungarian Parliament Building', city: 'Budapest', party: 'Szimpla Kert' },
+  PRG: { history: 'Charles Bridge', city: 'Prague Castle' },
+  NAP: { history: 'Pompeii', nature: 'Mount Vesuvius', beach: 'Posillipo', city: 'Naples' },
+  VLC: { city: 'City of Arts and Sciences', beach: 'Malvarrosa Beach' },
+  OPO: { history: 'Ribeira (Porto)', city: 'Porto' },
+  CTA: { nature: 'Mount Etna', history: 'Catania Cathedral', city: 'Catania', beach: 'Catania' },
+  KRK: { history: 'Wawel Castle', city: 'Main Square, Kraków' },
+  TIA: { city: 'Tirana', nature: 'Dajti Mountain' },
+  SOF: { history: 'Alexander Nevsky Cathedral, Sofia', nature: 'Vitosha', city: 'Sofia' },
+  TGD: { nature: 'Lake Skadar', beach: 'Budva', city: 'Podgorica' },
+};
+
+function landmarkTopic(code: string, primary: TuraVibe, destVibes: TuraVibe[]): string | undefined {
+  const topics = LANDMARK_TOPICS[code];
+  if (!topics) return undefined;
+  for (const v of [primary, ...destVibes, 'history', 'city'] as TuraVibe[]) {
+    if (v !== 'any' && topics[v]) return topics[v];
+  }
+  return Object.values(topics)[0];
+}
+
+const wikiImageCache = new Map<string, string>();
+
+/** Looks up a real photo for a landmark via Wikipedia's summary API (no key
+ * needed, CORS-open). Falls back to null on any miss so callers can use a
+ * placeholder instead of breaking. */
+async function wikiImage(topic: string): Promise<string | null> {
+  if (wikiImageCache.has(topic)) return wikiImageCache.get(topic)!;
+  try {
+    const res = await fetch(
+      `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(topic.replace(/ /g, '_'))}`,
+    );
+    if (!res.ok) return null;
+    const data = (await res.json()) as { thumbnail?: { source: string }; originalimage?: { source: string } };
+    const src = data.originalimage?.source ?? data.thumbnail?.source;
+    if (!src) return null;
+    const big = src.replace(/\/\d+px-/, '/1280px-');
+    wikiImageCache.set(topic, big);
+    return big;
+  } catch {
+    return null;
+  }
+}
+
+async function destinationImage(code: string, primary: TuraVibe, destVibes: TuraVibe[]): Promise<string> {
+  const topic = landmarkTopic(code, primary, destVibes);
+  const found = topic ? await wikiImage(topic) : null;
+  return found ?? img(code.toLowerCase());
+}
+
 /** Common European origin cities mapped to the airport-ish code tura expects.
  * Anything unrecognized falls back to the first 3 letters — tura's pricing is
  * a deterministic hash of the code either way, so it still produces a stable,
@@ -207,7 +302,7 @@ function toSearchRequest(query: DiscoverQuery): TuraSearchRequest {
   };
 }
 
-function destinationEn(d: TuraDestination) {
+async function destinationEn(d: TuraDestination, primaryVibe: TuraVibe) {
   const known = TURA_DESTINATION_EN[d.code];
   return {
     id: d.code.toLowerCase(),
@@ -215,10 +310,20 @@ function destinationEn(d: TuraDestination) {
     country: known?.country ?? d.country,
     region: known?.region ?? d.country,
     blurb: `A ${d.vibes.join(', ')} pick from tura's route-finding engine.`,
-    image: img(d.code.toLowerCase()),
+    image: await destinationImage(d.code, primaryVibe, d.vibes),
     tags: turaVibeToOurs(d.vibes[0] ?? 'any'),
     airportCode: d.code,
   };
+}
+
+function toLegSummaries(legs: TuraTransportLeg[]): TransportLegSummary[] {
+  return legs.map((l) => ({
+    mode: l.mode === 'air' ? 'flight' : l.mode,
+    fromCity: cityEn(l.fromCode, l.fromCity),
+    toCity: cityEn(l.toCode, l.toCity),
+    carrier: l.carrier,
+    durationMinutes: l.durationMin,
+  }));
 }
 
 /** Multimodal legs don't fit FlightSummary's single-carrier shape — collapse
@@ -243,6 +348,7 @@ function toFlightSummary(
     durationMinutes: outbound.totalDurationMin,
     stops: outbound.legs.length - 1,
     price: eur(outbound.pricePerPerson + inbound.pricePerPerson),
+    legs: toLegSummaries(outbound.legs),
   };
 }
 
@@ -305,18 +411,20 @@ function toMatch(option: TuraTripOption, query: DiscoverQuery): { score: number;
   return { score: Math.max(20, Math.min(99, Math.round(score))), reasons: reasons.slice(0, 3) };
 }
 
-function toTripIdea(option: TuraTripOption, query: DiscoverQuery): TripIdea {
-  const dest = destinationEn(option.destination);
+async function toTripIdea(option: TuraTripOption, query: DiscoverQuery): Promise<TripIdea> {
+  const primaryVibe = pickTuraVibe(query.vibes);
+  const dest = await destinationEn(option.destination, primaryVibe);
   const { score, reasons } = toMatch(option, query);
   const flights = toFlightSummary(option.outbound, option.inbound, query.origin.trim(), dest.city);
   const stay = toStaySummary(option.hotel, option.destination.city, dest.city);
   const id = `tura-${option.destination.code.toLowerCase()}-${option.startDate}`;
+  const nightWord = option.nights === 1 ? 'day' : 'days';
 
   return {
     id,
     destination: dest,
-    title: `${dest.city}: ${option.savings.percent}% cheaper than the obvious route`,
-    summary: `${option.nights} nights in ${dest.city}, ${flights.stops > 0 ? 'via a multimodal hack' : 'direct'} — tura's engine compared transport combos to find this price.`,
+    title: dest.city,
+    summary: `Spend ${option.nights} unforgettable ${nightWord} in ${dest.city}, ${dest.country}.`,
     matchScore: score,
     matchReasons: reasons,
     dates: { start: option.startDate, end: option.endDate },
@@ -407,7 +515,8 @@ export const liveTripService: TripService = {
   async discoverTrips(query) {
     try {
       const response = await callTura(toSearchRequest(query));
-      return rememberAll(response.options.map((o) => toTripIdea(o, query)));
+      const ideas = await Promise.all(response.options.map((o) => toTripIdea(o, query)));
+      return rememberAll(ideas);
     } catch {
       // tura unreachable (not running, network hiccup, etc.) — degrade to
       // mock results instead of breaking the Discover page.
@@ -418,7 +527,10 @@ export const liveTripService: TripService = {
   async getSampleIdeas() {
     try {
       const response = await callTura(toSearchRequest(DEFAULT_SAMPLE_QUERY));
-      return rememberAll(response.options.slice(0, 6).map((o) => toTripIdea(o, DEFAULT_SAMPLE_QUERY)));
+      const ideas = await Promise.all(
+        response.options.slice(0, 6).map((o) => toTripIdea(o, DEFAULT_SAMPLE_QUERY)),
+      );
+      return rememberAll(ideas);
     } catch {
       return mockTripService.getSampleIdeas();
     }

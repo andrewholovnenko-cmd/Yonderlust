@@ -1,31 +1,25 @@
 import { NextResponse } from 'next/server';
-
-// Server-only — never exposed to the browser. Defaults to the friend's
-// `tura` engine running locally; override in production once it's deployed.
-const TURA_API_BASE_URL = process.env.TURA_API_BASE_URL ?? 'http://localhost:3001';
+import { search } from '@/lib/tura/engine/search';
+import { validateSearchRequest } from '@/lib/tura/validate';
 
 /**
- * Same-origin proxy to the `tura` search engine. The engine has no CORS
- * headers of its own, so the browser can't call it directly — this route
- * runs server-side (no CORS involved) and just forwards the request body.
+ * The `tura` route-finding engine, vendored into this app (see src/lib/tura)
+ * so it runs in-process — no separate server to deploy or keep alive.
+ * Defaults to mock data; set DATA_SOURCE=real + KIWI_API_KEY once a real
+ * flights key is available (see src/lib/tura/providers/kiwiTransport.ts).
  */
 export async function POST(req: Request) {
-  const body = await req.text();
-
-  let upstream: Response;
+  let body: unknown;
   try {
-    upstream = await fetch(`${TURA_API_BASE_URL}/api/search`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body,
-    });
+    body = await req.json();
   } catch {
-    return NextResponse.json({ error: 'tura engine is unreachable' }, { status: 502 });
+    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
 
-  const text = await upstream.text();
-  return new NextResponse(text, {
-    status: upstream.status,
-    headers: { 'content-type': 'application/json' },
-  });
+  const parsed = validateSearchRequest(body);
+  if (!parsed.ok) {
+    return NextResponse.json({ error: parsed.error }, { status: 400 });
+  }
+
+  return NextResponse.json(search(parsed.value));
 }

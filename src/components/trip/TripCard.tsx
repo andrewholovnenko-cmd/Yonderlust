@@ -1,11 +1,11 @@
 import Link from 'next/link';
 import type { ReactNode } from 'react';
-import { CalendarDays, MapPin, Plane } from 'lucide-react';
+import { CalendarDays, MapPin } from 'lucide-react';
 import type { TripIdea } from '@/services/types';
 import { Photo } from '@/components/ui/Photo';
 import { Badge } from '@/components/ui/Badge';
 import { Skeleton } from '@/components/ui/Skeleton';
-import { formatDateRange, formatDuration, formatMoney } from '@/lib/utils';
+import { formatDateRange, formatDuration, formatMoney, transportIcon } from '@/lib/utils';
 
 interface TripCardProps {
   idea: TripIdea;
@@ -14,6 +14,7 @@ interface TripCardProps {
 }
 
 export function TripCard({ idea, action, priority }: TripCardProps) {
+  const TransportIcon = transportIcon(idea.flights.legs?.[0]?.mode ?? 'flight');
   return (
     <article className="group relative flex flex-col overflow-hidden rounded-lg border border-line bg-surface shadow-soft transition-all duration-300 ease-out-soft hover:-translate-y-1 hover:shadow-lift">
       <div className="relative">
@@ -60,7 +61,7 @@ export function TripCard({ idea, action, priority }: TripCardProps) {
               {formatDateRange(idea.dates.start, idea.dates.end)} · {idea.nights} nights
             </span>
             <span className="inline-flex items-center gap-1.5">
-              <Plane className="size-3.5" />
+              <TransportIcon className="size-3.5" />
               {formatDuration(idea.flights.durationMinutes)} from {idea.flights.fromCity}
             </span>
           </div>
