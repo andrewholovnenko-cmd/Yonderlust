@@ -7,7 +7,7 @@ import type { TransportLeg } from '@/lib/tura/types';
  */
 export interface TransportProvider {
   /** Cheapest air leg between two airports on a date, or null if none. */
-  searchAir(fromCode: string, toCode: string, date: string): TransportLeg | null;
+  searchAir(fromCode: string, toCode: string, date: string): Promise<TransportLeg | null>;
   /** Cheapest ground leg (bus/train), or null if there's no connection. */
-  searchGround(fromCode: string, toCode: string, date: string): TransportLeg | null;
+  searchGround(fromCode: string, toCode: string, date: string): Promise<TransportLeg | null>;
 }

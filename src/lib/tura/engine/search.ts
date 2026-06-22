@@ -50,62 +50,72 @@ function pickNaiveHotel(hotels: HotelOption[]): HotelOption | null {
 }
 
 /** Best (cheapest) trip to a specific destination across all candidate dates. */
-function bestForDestination(req: SearchRequest, destCode: string, starts: string[]): TripOption | null {
+async function bestForDestination(
+  req: SearchRequest,
+  destCode: string,
+  starts: string[],
+): Promise<TripOption | null> {
   const { transport, hotels } = getProviders();
   const nights = tripNights(req.durationDays);
   const rooms = Math.max(1, Math.ceil(req.groupSize / 2));
   const dest = DESTINATIONS.find((d) => d.code === destCode)!;
+  const dayTrip = nights === 0;
 
-  let best: TripOption | null = null;
+  const perStart = await Promise.all(
+    starts.map(async (start): Promise<TripOption | null> => {
+      const end = addDays(start, nights);
 
-  for (const start of starts) {
-    const end = addDays(start, nights);
+      const [outbound, inbound] = await Promise.all([
+        cheapestTransport(req.origin, destCode, start, transport, 'out'),
+        cheapestTransport(req.origin, destCode, end, transport, 'back'),
+      ]);
+      if (!outbound || !inbound) return null;
 
-    const outbound = cheapestTransport(req.origin, destCode, start, transport, 'out');
-    const inbound = cheapestTransport(req.origin, destCode, end, transport, 'back');
-    if (!outbound || !inbound) continue;
+      const hotelList = dayTrip ? [] : await hotels.search(destCode, start, nights);
+      const hotel = dayTrip ? null : pickOptimizedHotel(hotelList);
+      if (!dayTrip && !hotel) return null;
 
-    const dayTrip = nights === 0;
-    const hotelList = dayTrip ? [] : hotels.search(destCode, start, nights);
-    const hotel = dayTrip ? null : pickOptimizedHotel(hotelList);
-    if (!dayTrip && !hotel) continue;
+      const transportTotal = (outbound.pricePerPerson + inbound.pricePerPerson) * req.groupSize;
+      const hotelTotal = hotel ? hotel.pricePerNight * rooms * nights : 0;
+      const total = transportTotal + hotelTotal;
 
-    const transportTotal = (outbound.pricePerPerson + inbound.pricePerPerson) * req.groupSize;
-    const hotelTotal = hotel ? hotel.pricePerNight * rooms * nights : 0;
-    const total = transportTotal + hotelTotal;
+      const [directOut, directIn] = await Promise.all([
+        directTransport(req.origin, destCode, start, transport, 'out'),
+        directTransport(req.origin, destCode, end, transport, 'back'),
+      ]);
+      const naiveHotel = dayTrip ? null : pickNaiveHotel(hotelList) ?? hotel;
+      const naiveTotal =
+        ((directOut ?? outbound).pricePerPerson + (directIn ?? inbound).pricePerPerson) *
+          req.groupSize +
+        (naiveHotel ? naiveHotel.pricePerNight * rooms * nights : 0);
 
-    const directOut = directTransport(req.origin, destCode, start, transport, 'out') ?? outbound;
-    const directIn = directTransport(req.origin, destCode, end, transport, 'back') ?? inbound;
-    const naiveHotel = dayTrip ? null : pickNaiveHotel(hotelList) ?? hotel;
-    const naiveTotal =
-      (directOut.pricePerPerson + directIn.pricePerPerson) * req.groupSize +
-      (naiveHotel ? naiveHotel.pricePerNight * rooms * nights : 0);
+      return {
+        destination: dest,
+        startDate: start,
+        endDate: end,
+        nights,
+        groupSize: req.groupSize,
+        rooms: dayTrip ? 0 : rooms,
+        outbound,
+        inbound,
+        hotel,
+        transportTotal,
+        hotelTotal,
+        total,
+        perPerson: Math.round(total / req.groupSize),
+        savings: computeSavings(naiveTotal, total),
+      };
+    }),
+  );
 
-    const option: TripOption = {
-      destination: dest,
-      startDate: start,
-      endDate: end,
-      nights,
-      groupSize: req.groupSize,
-      rooms: dayTrip ? 0 : rooms,
-      outbound,
-      inbound,
-      hotel,
-      transportTotal,
-      hotelTotal,
-      total,
-      perPerson: Math.round(total / req.groupSize),
-      savings: computeSavings(naiveTotal, total),
-    };
-
-    if (best === null || option.total < best.total) best = option;
-  }
-
-  return best;
+  return perStart.reduce<TripOption | null>(
+    (best, o) => (o && (best === null || o.total < best.total) ? o : best),
+    null,
+  );
 }
 
 /** Main entry point: request -> ranked "where to go" options. */
-export function search(req: SearchRequest): SearchResponse {
+export async function search(req: SearchRequest): Promise<SearchResponse> {
   const origin = req.origin.toUpperCase();
   const starts = startDates(req);
 
@@ -113,11 +123,10 @@ export function search(req: SearchRequest): SearchResponse {
     (d) => d.code !== origin && (req.vibe === 'any' || d.vibes.includes(req.vibe)),
   );
 
-  const all: TripOption[] = [];
-  for (const dest of candidates) {
-    const best = bestForDestination({ ...req, origin }, dest.code, starts);
-    if (best) all.push(best);
-  }
+  const results = await Promise.all(
+    candidates.map((dest) => bestForDestination({ ...req, origin }, dest.code, starts)),
+  );
+  const all = results.filter((o): o is TripOption => o !== null);
 
   all.sort((a, b) => a.total - b.total);
 

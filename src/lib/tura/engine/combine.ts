@@ -29,30 +29,41 @@ function toOption(legs: TransportLeg[], label: string): TransportOption {
  * direction "out": home -> away; "back": away -> home.
  * Multimodal routes go through ground hubs near home (lowcost bases).
  */
-export function transportOptions(
+export async function transportOptions(
   home: string,
   away: string,
   date: string,
   provider: TransportProvider,
   direction: 'out' | 'back',
-): TransportOption[] {
+): Promise<TransportOption[]> {
   const options: TransportOption[] = [];
 
   const directFrom = direction === 'out' ? home : away;
   const directTo = direction === 'out' ? away : home;
-  const direct = provider.searchAir(directFrom, directTo, date);
+  const direct = await provider.searchAir(directFrom, directTo, date);
   if (direct) options.push(toOption([direct], 'Прямой перелёт'));
 
-  for (const hub of hubsForOrigin(home)) {
-    if (hub.code === away.toUpperCase()) continue;
+  const hubResults = await Promise.all(
+    hubsForOrigin(home)
+      .filter((hub) => hub.code !== away.toUpperCase())
+      .map(async (hub) => {
+        let legs: (TransportLeg | null)[];
+        if (direction === 'out') {
+          legs = await Promise.all([
+            provider.searchGround(home, hub.code, date),
+            provider.searchAir(hub.code, away, date),
+          ]);
+        } else {
+          legs = await Promise.all([
+            provider.searchAir(away, hub.code, date),
+            provider.searchGround(hub.code, home, date),
+          ]);
+        }
+        return { hub, legs };
+      }),
+  );
 
-    let legs: (TransportLeg | null)[];
-    if (direction === 'out') {
-      legs = [provider.searchGround(home, hub.code, date), provider.searchAir(hub.code, away, date)];
-    } else {
-      legs = [provider.searchAir(away, hub.code, date), provider.searchGround(hub.code, home, date)];
-    }
-
+  for (const { hub, legs } of hubResults) {
     if (legs.every((l): l is TransportLeg => l !== null)) {
       const ground = legs.find((l) => l.mode !== 'air')!;
       const label = `${MODE_LABEL[ground.mode]} до ${hub.city} + лоукост`;
@@ -64,25 +75,25 @@ export function transportOptions(
 }
 
 /** Cheapest transport option (may be multimodal). */
-export function cheapestTransport(
+export async function cheapestTransport(
   home: string,
   away: string,
   date: string,
   provider: TransportProvider,
   direction: 'out' | 'back',
-): TransportOption | null {
-  return transportOptions(home, away, date, provider, direction)[0] ?? null;
+): Promise<TransportOption | null> {
+  const options = await transportOptions(home, away, date, provider, direction);
+  return options[0] ?? null;
 }
 
 /** Direct flight only — the baseline for computing savings ("the obvious way"). */
-export function directTransport(
+export async function directTransport(
   home: string,
   away: string,
   date: string,
   provider: TransportProvider,
   direction: 'out' | 'back',
-): TransportOption | null {
-  return (
-    transportOptions(home, away, date, provider, direction).find((o) => !o.isMultimodal) ?? null
-  );
+): Promise<TransportOption | null> {
+  const options = await transportOptions(home, away, date, provider, direction);
+  return options.find((o) => !o.isMultimodal) ?? null;
 }

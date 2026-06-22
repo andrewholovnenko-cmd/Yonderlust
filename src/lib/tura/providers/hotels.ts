@@ -6,5 +6,5 @@ import type { HotelOption } from '@/lib/tura/types';
  * "good" one itself.
  */
 export interface HotelProvider {
-  search(destCode: string, checkIn: string, nights: number): HotelOption[];
+  search(destCode: string, checkIn: string, nights: number): Promise<HotelOption[]>;
 }
