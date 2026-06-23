@@ -87,9 +87,10 @@ export function TripCard({ idea, action, priority }: TripCardProps) {
           <div className="text-right">
             <div className="font-serif text-xl text-ink">
               {formatMoney(perPerson, idea.cost.total.currency)}
+              <span className="ml-1 text-xs font-sans font-normal text-ink-3">/ person</span>
             </div>
             <div className="text-xs text-ink-3">
-              per person · {formatMoney(total, idea.cost.total.currency)} total
+              {formatMoney(total, idea.cost.total.currency)} total for {travelers}
             </div>
           </div>
         </div>

@@ -24,6 +24,13 @@ interface GlobePoint {
 // actual search engine.
 const FALLBACK_POINTS: GlobePoint[] = [];
 
+// The destination catalog (curated + discovered) can grow past 100 entries;
+// rendering that many WebGL markers plus per-frame DOM pin projection
+// (focused mode) is what made the globe feel laggy, not the map texture
+// itself. Capping how many actually reach the globe keeps both paths cheap
+// regardless of how big the underlying catalog gets.
+const MAX_GLOBE_POINTS = 36;
+
 const INLINE_MAX_PX = 720; // 1.5x the previous 480px inline cap
 // 1.3x the previous focused box — markers that sit close together on the
 // sphere end up farther apart in screen pixels, so the smaller one behind
@@ -213,7 +220,10 @@ function CobeGlobe({ points, activeIndex, interactive, bufferSize, onSelect }: C
     container.appendChild(canvas);
     cursorRef.current = canvas;
 
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    // Backing-buffer pixel count scales with dpr², and the focused globe can
+    // be 1400px+ across — capping at 1.5 instead of 2 cuts that buffer by
+    // ~45% with no visible softness, since the dot pattern itself is coarse.
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
 
     const globe = createGlobe(canvas, {
       devicePixelRatio: dpr,
@@ -223,7 +233,7 @@ function CobeGlobe({ points, activeIndex, interactive, bufferSize, onSelect }: C
       theta: BASE_THETA,
       dark: 1,
       diffuse: 1.2,
-      mapSamples: 14000,
+      mapSamples: 9000,
       mapBrightness: 4.2,
       baseColor: [0.09, 0.2, 0.18],
       markerColor: [0.36, 0.85, 0.75],
@@ -397,7 +407,7 @@ export function HeroGlobe() {
     fetch('/api/destinations/globe')
       .then((res) => (res.ok ? res.json() : null))
       .then((data: { points?: GlobePoint[] } | null) => {
-        if (!cancelled && data?.points?.length) setPoints(data.points);
+        if (!cancelled && data?.points?.length) setPoints(data.points.slice(0, MAX_GLOBE_POINTS));
       })
       .catch(() => {
         // Stay on FALLBACK_POINTS (empty) — the globe just renders bare,

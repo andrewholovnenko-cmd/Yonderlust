@@ -735,7 +735,7 @@ const DEFAULT_SAMPLE_QUERY: DiscoverQuery = {
   dates: { start: addDays(new Date().toISOString().slice(0, 10), 14), end: addDays(new Date().toISOString().slice(0, 10), 20) },
   datesFlexible: true,
   durationDays: 6,
-  travelers: 2,
+  travelers: 1,
   vibes: ['budget'],
 };
 
