@@ -319,10 +319,20 @@ async function wikiImage(topic: string): Promise<string | null> {
   }
 }
 
-async function destinationImage(code: string, primary: TuraVibe, destVibes: TuraVibe[]): Promise<string> {
+async function destinationImage(
+  code: string,
+  primary: TuraVibe,
+  destVibes: TuraVibe[],
+  cityNameEn?: string,
+): Promise<string> {
   const topic = landmarkTopic(code, primary, destVibes);
   const found = topic ? await wikiImage(topic) : null;
-  return found ?? img(code.toLowerCase());
+  if (found) return found;
+  // No curated landmark for this destination (e.g. a freshly-discovered one
+  // outside the hand-tagged list) — most cities still have their own
+  // Wikipedia article, so try that before giving up to a generic photo.
+  const cityFallback = cityNameEn ? await wikiImage(cityNameEn) : null;
+  return cityFallback ?? img(code.toLowerCase());
 }
 
 /** City name -> IATA (city) code, for the origin field. Real flight prices
@@ -473,7 +483,7 @@ async function destinationEn(d: TuraDestination, primaryVibe: TuraVibe) {
     country: known?.country ?? d.country,
     region: known?.region ?? d.country,
     blurb: `A ${d.vibes.join(', ')} pick from tura's route-finding engine.`,
-    image: await destinationImage(d.code, primaryVibe, d.vibes),
+    image: await destinationImage(d.code, primaryVibe, d.vibes, known?.city ?? d.city),
     tags: turaVibeToOurs(d.vibes[0] ?? 'any'),
     airportCode: d.code,
   };
@@ -515,10 +525,19 @@ function toFlightSummary(
   };
 }
 
-function toStaySummary(hotel: TuraHotelOption | null, turaCity: string, city: string): StaySummary {
+function toStaySummary(
+  hotel: TuraHotelOption | null,
+  turaCity: string,
+  city: string,
+  nights: number,
+): StaySummary {
   if (!hotel) {
     return {
-      name: `Stay in ${city}`,
+      // nights === 0 is a genuine day trip (no stay needed); nights > 0
+      // with no hotel means we just don't have verified hotel data for this
+      // destination yet (e.g. a freshly-discovered one) — say so rather
+      // than implying a free/zero-cost stay.
+      name: nights === 0 ? `Day trip to ${city}` : `Hotel pricing not yet available for ${city}`,
       type: 'hotel',
       area: city,
       rating: 4,
@@ -579,7 +598,7 @@ async function toTripIdea(option: TuraTripOption, query: DiscoverQuery): Promise
   const dest = await destinationEn(option.destination, primaryVibe);
   const { score, reasons } = toMatch(option, query);
   const flights = toFlightSummary(option.outbound, option.inbound, query.origin.trim(), dest.city);
-  const stay = toStaySummary(option.hotel, option.destination.city, dest.city);
+  const stay = toStaySummary(option.hotel, option.destination.city, dest.city, option.nights);
   const id = `tura-${option.destination.code.toLowerCase()}-${option.startDate}`;
   const nightWord = option.nights === 1 ? 'day' : 'days';
 

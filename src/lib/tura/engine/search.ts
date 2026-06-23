@@ -1,5 +1,6 @@
-import type { SearchRequest, SearchResponse, TripOption, HotelOption } from '@/lib/tura/types';
+import type { Destination, SearchRequest, SearchResponse, TripOption, HotelOption } from '@/lib/tura/types';
 import { DESTINATIONS } from '@/lib/tura/data/destinations';
+import { discoverDestinations } from '@/lib/tura/discovery';
 import { getProviders } from '@/lib/tura/providers';
 import { cheapestTransport, directTransport } from '@/lib/tura/engine/combine';
 import { computeSavings } from '@/lib/tura/engine/savings';
@@ -52,13 +53,13 @@ function pickNaiveHotel(hotels: HotelOption[]): HotelOption | null {
 /** Best (cheapest) trip to a specific destination across all candidate dates. */
 async function bestForDestination(
   req: SearchRequest,
-  destCode: string,
+  dest: Destination,
   starts: string[],
 ): Promise<TripOption | null> {
   const { transport, hotels } = getProviders();
   const nights = tripNights(req.durationDays);
   const rooms = Math.max(1, Math.ceil(req.groupSize / 2));
-  const dest = DESTINATIONS.find((d) => d.code === destCode)!;
+  const destCode = dest.code;
   const dayTrip = nights === 0;
 
   const perStart = await Promise.all(
@@ -71,9 +72,13 @@ async function bestForDestination(
       ]);
       if (!outbound || !inbound) return null;
 
+      // No hotel data (e.g. a freshly-discovered destination with no
+      // verified TripAdvisor id yet) no longer drops the candidate — it
+      // surfaces flight-only rather than silently disappearing, never with
+      // a made-up hotel price (toStaySummary in services/tura.ts says so
+      // explicitly instead of showing a free/zero-cost stay).
       const hotelList = dayTrip ? [] : await hotels.search(destCode, start, nights);
       const hotel = dayTrip ? null : pickOptimizedHotel(hotelList);
-      if (!dayTrip && !hotel) return null;
 
       const transportTotal = (outbound.pricePerPerson + inbound.pricePerPerson) * req.groupSize;
       const hotelTotal = hotel ? hotel.pricePerNight * rooms * nights : 0;
@@ -119,12 +124,23 @@ export async function search(req: SearchRequest): Promise<SearchResponse> {
   const origin = req.origin.toUpperCase();
   const starts = startDates(req);
 
-  const candidates = DESTINATIONS.filter(
+  const curated = DESTINATIONS.filter(
     (d) => d.code !== origin && (req.vibe === 'any' || d.vibes.includes(req.vibe)),
   );
 
+  // Beyond the curated list, ask Travelpayouts what it genuinely has cheap
+  // fares for from this exact origin — a real, open-ended "where can I fly"
+  // lookup, not a fixed candidate pool. These are tagged 'city' only (no
+  // verified vibe data yet), so a specific vibe filter like 'beach' still
+  // only matches the curated, hand-tagged list — but 'any'/'city' searches
+  // genuinely grow over time as different origins get searched.
+  const discovered =
+    req.vibe === 'any' || req.vibe === 'city' ? await discoverDestinations(origin, req.budget) : [];
+
+  const candidates = [...curated, ...discovered];
+
   const results = await Promise.all(
-    candidates.map((dest) => bestForDestination({ ...req, origin }, dest.code, starts)),
+    candidates.map((dest) => bestForDestination({ ...req, origin }, dest, starts)),
   );
   const all = results.filter((o): o is TripOption => o !== null);
 

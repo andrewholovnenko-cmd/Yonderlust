@@ -12,21 +12,17 @@ interface GlobePoint {
   id: string;
   city: string;
   country: string;
-  price: number;
+  price: number | null;
   image: string;
   location: [number, number]; // [lat, lng]
 }
 
-const POINTS: GlobePoint[] = [
-  { id: 'kotor', city: 'Kotor', country: 'Montenegro', price: 1380, location: [42.42, 18.77], image: 'https://picsum.photos/seed/yl-kotor/240/240' },
-  { id: 'split', city: 'Split', country: 'Croatia', price: 1420, location: [43.51, 16.44], image: 'https://picsum.photos/seed/yl-split/240/240' },
-  { id: 'naxos', city: 'Naxos', country: 'Greece', price: 1620, location: [37.1, 25.38], image: 'https://picsum.photos/seed/yl-naxos/240/240' },
-  { id: 'athens', city: 'Athens', country: 'Greece', price: 1480, location: [37.98, 23.73], image: 'https://picsum.photos/seed/yl-athens/240/240' },
-  { id: 'valletta', city: 'Valletta', country: 'Malta', price: 1280, location: [35.9, 14.51], image: 'https://picsum.photos/seed/yl-valletta/240/240' },
-  { id: 'lisbon', city: 'Lisbon', country: 'Portugal', price: 1550, location: [38.72, -9.14], image: 'https://picsum.photos/seed/yl-lisbon/240/240' },
-  { id: 'funchal', city: 'Funchal', country: 'Madeira', price: 1840, location: [32.66, -16.92], image: 'https://picsum.photos/seed/yl-funchal/240/240' },
-  { id: 'tirana', city: 'Tirana', country: 'Albania', price: 1020, location: [41.33, 19.82], image: 'https://picsum.photos/seed/yl-tirana/240/240' },
-];
+// Real destinations (curated + whatever users have discovered via search so
+// far), fetched from /api/destinations/globe — see that route and
+// src/lib/tura/discovery.ts. Replaces the old hardcoded mock points, which
+// pointed at trip ids ('kotor', 'naxos', ...) that never existed in the
+// actual search engine.
+const FALLBACK_POINTS: GlobePoint[] = [];
 
 const INLINE_MAX_PX = 720; // 1.5x the previous 480px inline cap
 // 1.3x the previous focused box — markers that sit close together on the
@@ -126,8 +122,8 @@ function declutterPins(pos: { x: number; y: number; front: boolean }[]) {
 
 // Small, muted dots for the rest of the globe; the active destination gets a
 // noticeably bigger, brighter marker so the highlight reads clearly at a glance.
-function markersFor(active: number) {
-  return POINTS.map((p, i) => {
+function markersFor(active: number, points: GlobePoint[]) {
+  return points.map((p, i) => {
     const isActive = i === active;
     return {
       location: p.location,
@@ -138,6 +134,7 @@ function markersFor(active: number) {
 }
 
 interface CobeGlobeProps {
+  points: GlobePoint[];
   activeIndex: number;
   interactive: boolean;
   /** CSS px the canvas is currently displayed at — only changes at discrete
@@ -145,16 +142,16 @@ interface CobeGlobeProps {
    * frame, so the WebGL backing buffer isn't reallocated while the globe is
    * mid-transition. That per-frame reallocation was the source of the lag. */
   bufferSize: number;
-  /** Navigate to a destination — wired to the marker pins, only relevant
+  /** Navigate away from the globe — wired to the marker pins, only relevant
    * once focused (the pins don't render in inline mode). */
-  onSelect: (id: string) => void;
+  onSelect: () => void;
 }
 
 /** A self-contained spinning cobe planet. A single instance is reused for both
  * the inline and focused layouts — Framer Motion's layout animation handles
  * the smooth move-and-grow between them while this canvas just visually
  * scales via CSS during the transition. */
-function CobeGlobe({ activeIndex, interactive, bufferSize, onSelect }: CobeGlobeProps) {
+function CobeGlobe({ points, activeIndex, interactive, bufferSize, onSelect }: CobeGlobeProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const phiRef = useRef(0);
   const thetaRef = useRef(BASE_THETA);
@@ -163,6 +160,7 @@ function CobeGlobe({ activeIndex, interactive, bufferSize, onSelect }: CobeGlobe
   const pauseUntilRef = useRef(0); // epoch ms; auto-rotate paused until this time (focused mode only)
   const activeRef = useRef(activeIndex);
   const interactiveRef = useRef(interactive);
+  const pointsRef = useRef(points);
   const cursorRef = useRef<HTMLCanvasElement | null>(null);
   const markerWrapRefs = useRef<(HTMLDivElement | null)[]>([]);
   const markerDotRefs = useRef<(HTMLSpanElement | null)[]>([]);
@@ -170,6 +168,9 @@ function CobeGlobe({ activeIndex, interactive, bufferSize, onSelect }: CobeGlobe
   useEffect(() => {
     activeRef.current = activeIndex;
   }, [activeIndex]);
+  useEffect(() => {
+    pointsRef.current = points;
+  }, [points]);
   useEffect(() => {
     sizeRef.current = bufferSize;
   }, [bufferSize]);
@@ -220,7 +221,7 @@ function CobeGlobe({ activeIndex, interactive, bufferSize, onSelect }: CobeGlobe
       baseColor: [0.09, 0.2, 0.18],
       markerColor: [0.36, 0.85, 0.75],
       glowColor: [0.12, 0.32, 0.3],
-      markers: markersFor(activeRef.current),
+      markers: markersFor(activeRef.current, pointsRef.current),
       scale: 1,
     });
 
@@ -241,11 +242,11 @@ function CobeGlobe({ activeIndex, interactive, bufferSize, onSelect }: CobeGlobe
         // While focused, the WebGL dots are hidden in favour of the
         // hoverable/clickable DOM pins positioned below; inline mode keeps
         // the small cycling-highlight dots as before.
-        markers: interactiveRef.current ? [] : markersFor(activeRef.current),
+        markers: interactiveRef.current ? [] : markersFor(activeRef.current, pointsRef.current),
       });
 
       if (interactiveRef.current) {
-        const projected = POINTS.map((p) => {
+        const projected = pointsRef.current.map((p) => {
           const { nx, ny, front, depth } = projectMarker(p.location[0], p.location[1], phiRef.current, thetaRef.current);
           return { x: nx * size, y: ny * size, front, depth };
         });
@@ -326,7 +327,7 @@ function CobeGlobe({ activeIndex, interactive, bufferSize, onSelect }: CobeGlobe
     <div ref={containerRef} className="relative size-full" style={{ contain: 'layout paint size' }}>
       {interactive && (
         <div className="pointer-events-none absolute inset-0">
-          {POINTS.map((p, i) => (
+          {points.map((p, i) => (
             <div
               key={p.id}
               ref={(el) => {
@@ -342,10 +343,10 @@ function CobeGlobe({ activeIndex, interactive, bufferSize, onSelect }: CobeGlobe
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
-                    onSelect(p.id);
+                    onSelect();
                   }}
                   className="group block p-0.5"
-                  aria-label={`${p.city}, ${p.country} — from ${formatMoney(p.price)}`}
+                  aria-label={`${p.city}, ${p.country}${p.price ? ` — from ${formatMoney(p.price)}` : ''}`}
                 >
                   <span
                     ref={(el) => {
@@ -357,7 +358,9 @@ function CobeGlobe({ activeIndex, interactive, bufferSize, onSelect }: CobeGlobe
                     <Photo src={p.image} alt={p.city} className="aspect-[4/3] w-full rounded-lg" sizes="160px" />
                     <p className="mt-1.5 font-serif text-sm leading-tight text-ink">{p.city}</p>
                     <p className="text-[11px] text-ink-3">{p.country}</p>
-                    <p className="text-xs font-medium text-accent">from {formatMoney(p.price)}</p>
+                    {p.price != null && (
+                      <p className="text-xs font-medium text-accent">from {formatMoney(p.price)}</p>
+                    )}
                   </div>
                 </button>
               </div>
@@ -371,6 +374,7 @@ function CobeGlobe({ activeIndex, interactive, bufferSize, onSelect }: CobeGlobe
 
 export function HeroGlobe() {
   const router = useRouter();
+  const [points, setPoints] = useState<GlobePoint[]>(FALLBACK_POINTS);
   const [activeIndex, setActiveIndex] = useState(0);
   const [focused, setFocused] = useState(false);
   const [bufferSize, setBufferSize] = useState(INLINE_MAX_PX);
@@ -380,6 +384,22 @@ export function HeroGlobe() {
   useEffect(() => {
     focusedRef.current = focused;
   }, [focused]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/destinations/globe')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { points?: GlobePoint[] } | null) => {
+        if (!cancelled && data?.points?.length) setPoints(data.points);
+      })
+      .catch(() => {
+        // Stay on FALLBACK_POINTS (empty) — the globe just renders bare,
+        // never fabricated destinations.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Track the inline placeholder's real rendered size. This element never
   // resizes during the focus transition (it's a static layout placeholder),
@@ -398,10 +418,10 @@ export function HeroGlobe() {
 
   useEffect(() => {
     const id = window.setInterval(() => {
-      if (!focusedRef.current) setActiveIndex((a) => (a + 1) % POINTS.length);
+      if (!focusedRef.current && points.length) setActiveIndex((a) => (a + 1) % points.length);
     }, 2600);
     return () => window.clearInterval(id);
-  }, []);
+  }, [points.length]);
 
   useEffect(() => {
     if (!focused) return;
@@ -412,13 +432,14 @@ export function HeroGlobe() {
     return () => window.removeEventListener('keydown', onKey);
   }, [focused]);
 
-  const go = useCallback(
-    (id: string) => {
-      setFocused(false);
-      router.push(`/trip/${id}`);
-    },
-    [router],
-  );
+  // There's no standalone page for a single destination outside of an actual
+  // search result (tura's trip ids are generated per-search, e.g.
+  // 'tura-bcn-2026-08-01' — not a fixed per-city id) so a globe pin opens the
+  // "where should I go" planner rather than a dead /trip/<city-code> link.
+  const go = useCallback(() => {
+    setFocused(false);
+    router.push('/discover');
+  }, [router]);
 
   // Bump the WebGL buffer resolution only once the move/grow (or shrink)
   // animation has actually settled — never mid-flight. During the transition
@@ -433,7 +454,7 @@ export function HeroGlobe() {
     }
   }, []);
 
-  const active = POINTS[activeIndex];
+  const active = points[activeIndex] ?? null;
 
   return (
     // Fixed-size placeholder so the page layout never jumps: the globe itself
@@ -482,17 +503,17 @@ export function HeroGlobe() {
             background: 'radial-gradient(circle at center, rgb(var(--color-accent)/0.18), transparent 62%)',
           }}
         />
-        <CobeGlobe activeIndex={activeIndex} interactive={focused} bufferSize={bufferSize} onSelect={go} />
+        <CobeGlobe points={points} activeIndex={activeIndex} interactive={focused} bufferSize={bufferSize} onSelect={go} />
 
         {/* cycling destination card — only while inline; the focused chip menu replaces it */}
         <AnimatePresence mode="wait">
-          {!focused && (
+          {!focused && active && (
             <motion.button
               key={active.id}
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                go(active.id);
+                go();
               }}
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
@@ -504,9 +525,11 @@ export function HeroGlobe() {
               <span>
                 <span className="block font-serif text-base leading-tight text-ink">{active.city}</span>
                 <span className="block text-xs text-ink-3">{active.country}</span>
-                <span className="mt-0.5 block text-sm font-medium text-accent">
-                  from {formatMoney(active.price)}
-                </span>
+                {active.price != null && (
+                  <span className="mt-0.5 block text-sm font-medium text-accent">
+                    from {formatMoney(active.price)}
+                  </span>
+                )}
               </span>
             </motion.button>
           )}
@@ -529,16 +552,16 @@ export function HeroGlobe() {
             exit={{ opacity: 0, y: 10 }}
             transition={{ duration: 0.3, delay: 0.15 }}
           >
-            {POINTS.map((p) => (
+            {points.map((p) => (
               <button
                 key={p.id}
                 type="button"
-                onClick={() => go(p.id)}
+                onClick={() => go()}
                 className="inline-flex items-center gap-2 rounded-full border border-bg/20 bg-bg/10 py-1.5 pl-1.5 pr-4 text-bg backdrop-blur transition-colors hover:bg-bg/20"
               >
                 <Photo src={p.image} alt={p.city} className="size-7 shrink-0 rounded-full" sizes="28px" />
                 <span className="text-sm font-medium">{p.city}</span>
-                <span className="text-sm text-bg/70">{formatMoney(p.price)}</span>
+                {p.price != null && <span className="text-sm text-bg/70">{formatMoney(p.price)}</span>}
               </button>
             ))}
           </motion.div>
