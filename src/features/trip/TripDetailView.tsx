@@ -11,6 +11,7 @@ import {
   Compass,
   Plane,
   Sparkles,
+  Ticket,
   UtensilsCrossed,
 } from 'lucide-react';
 import type { ItineraryItemKind, Money } from '@/services/types';
@@ -22,6 +23,7 @@ import { Stars } from '@/components/ui/Stars';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { buttonClasses } from '@/components/ui/Button';
 import { SaveButton } from '@/features/saved/SaveButton';
+import { aviasalesBookingUrl } from '@/lib/booking';
 import { formatDateRange, formatDuration, formatMoney, transportIcon } from '@/lib/utils';
 
 const kindIcon: Record<ItineraryItemKind, typeof Plane> = {
@@ -210,14 +212,32 @@ export function TripDetailView({ id }: { id: string }) {
                 ))}
               </dl>
               <div className="mt-5 flex flex-col gap-2">
+                <a
+                  href={aviasalesBookingUrl({
+                    fromCode: trip.flights.fromCode,
+                    toCode: trip.flights.toCode,
+                    startDate: trip.dates.start,
+                    endDate: trip.dates.end,
+                    travelers: trip.travelers,
+                  })}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={buttonClasses('primary', 'md', 'w-full inline-flex items-center justify-center gap-2')}
+                >
+                  <Ticket className="size-4" />
+                  Book this trip
+                </a>
                 <SaveButton idea={trip} className="w-full" />
                 <Link
                   href={`/plan?destination=${trip.destination.id}`}
-                  className={buttonClasses('primary', 'md', 'w-full')}
+                  className={buttonClasses('outline', 'md', 'w-full')}
                 >
                   Build in planner
                 </Link>
               </div>
+              <p className="mt-2 text-center text-xs text-ink-3">
+                Opens flight search on Aviasales to complete your booking.
+              </p>
             </div>
 
             <div className="rounded-xl border border-line bg-surface p-5">

@@ -239,11 +239,12 @@ async function destinationImage(code: string, primary: TuraVibe, destVibes: Tura
   return found ?? img(code.toLowerCase());
 }
 
-/** Common European origin cities mapped to the airport-ish code tura expects.
- * Anything unrecognized falls back to the first 3 letters — tura's pricing is
- * a deterministic hash of the code either way, so it still produces a stable,
- * plausible result for an origin outside this list (just without the
- * bus-to-lowcost-hub multimodal trick, which only fires for known hubs). */
+/** City name -> IATA (city) code, for the origin field. Real flight prices
+ * come from Travelpayouts, which needs a real code — guessing the first 3
+ * letters of the city name (the old fallback) is wrong for most cities
+ * (e.g. "Barcelona" -> "BAR" instead of "BCN") and silently returns zero
+ * flight results, so anything a user is likely to type as a departure city
+ * needs to be listed here explicitly. */
 const ORIGIN_CODES: Record<string, string> = {
   vienna: 'VIE',
   wien: 'VIE',
@@ -252,9 +253,85 @@ const ORIGIN_CODES: Record<string, string> = {
   warszawa: 'WAW',
   munich: 'MUC',
   munchen: 'MUC',
+  münchen: 'MUC',
   prague: 'PRG',
   praha: 'PRG',
   budapest: 'BUD',
+  barcelona: 'BCN',
+  lisbon: 'LIS',
+  lisboa: 'LIS',
+  athens: 'ATH',
+  rome: 'ROM',
+  roma: 'ROM',
+  palma: 'PMI',
+  'palma de mallorca': 'PMI',
+  split: 'SPU',
+  naples: 'NAP',
+  napoli: 'NAP',
+  valencia: 'VLC',
+  porto: 'OPO',
+  catania: 'CTA',
+  krakow: 'KRK',
+  kraków: 'KRK',
+  cracow: 'KRK',
+  tirana: 'TIA',
+  sofia: 'SOF',
+  podgorica: 'TGD',
+  paris: 'PAR',
+  madrid: 'MAD',
+  milan: 'MIL',
+  milano: 'MIL',
+  london: 'LON',
+  amsterdam: 'AMS',
+  brussels: 'BRU',
+  bruxelles: 'BRU',
+  zurich: 'ZRH',
+  zürich: 'ZRH',
+  geneva: 'GVA',
+  dublin: 'DUB',
+  stockholm: 'STO',
+  copenhagen: 'CPH',
+  oslo: 'OSL',
+  helsinki: 'HEL',
+  bratislava: 'BTS',
+  wroclaw: 'WRO',
+  wrocław: 'WRO',
+  katowice: 'KTW',
+  poznan: 'POZ',
+  poznań: 'POZ',
+  bergamo: 'BGY',
+  milanbergamo: 'BGY',
+  hamburg: 'HAM',
+  cologne: 'CGN',
+  köln: 'CGN',
+  frankfurt: 'FRA',
+  stuttgart: 'STR',
+  düsseldorf: 'DUS',
+  dusseldorf: 'DUS',
+  venice: 'VCE',
+  venezia: 'VCE',
+  bologna: 'BLQ',
+  florence: 'FLR',
+  firenze: 'FLR',
+  malpensa: 'MXP',
+  bilbao: 'BIO',
+  seville: 'SVQ',
+  sevilla: 'SVQ',
+  malaga: 'AGP',
+  málaga: 'AGP',
+  ibiza: 'IBZ',
+  malta: 'MLA',
+  valletta: 'MLA',
+  larnaca: 'LCA',
+  bucharest: 'BUH',
+  belgrade: 'BEG',
+  zagreb: 'ZAG',
+  ljubljana: 'LJU',
+  vilnius: 'VNO',
+  riga: 'RIX',
+  tallinn: 'TLL',
+  kyiv: 'IEV',
+  kiev: 'IEV',
 };
 
 function originCode(query: DiscoverQuery): string {
@@ -498,6 +575,51 @@ async function callTura(request: TuraSearchRequest): Promise<TuraSearchResponse>
   return res.json();
 }
 
+// "A few ideas to start" doesn't lock to one trip length — it tries a
+// spread of nights per destination and, for each, keeps the longest stay
+// that still fits the budget (falling back to the cheapest option if none
+// fit at all). Picking the *cheapest* nights outright degenerates to always
+// picking the shortest candidate, since hotel cost scales with nights while
+// flight cost (Travelpayouts' /v1/prices/cheap is month-granularity, not
+// exact-date) stays flat across nearby dates — so "longest that fits
+// budget" is what actually rewards a destination having unusually cheap
+// flights this month. Genuine date-level fare arbitrage (a specific day
+// being cheaper to fly) would need Travelpayouts' calendar endpoint instead.
+const SAMPLE_NIGHTS_CANDIDATES = [3, 4, 5, 6, 7, 9];
+
+async function bestPerDestination(
+  base: DiscoverQuery,
+  nightsCandidates: number[],
+): Promise<TuraTripOption[]> {
+  const baseRequest = toSearchRequest(base);
+  const responses = await Promise.all(
+    nightsCandidates.map((nights) => callTura({ ...baseRequest, durationDays: nights + 1 })),
+  );
+
+  const byDestination = new Map<string, TuraTripOption[]>();
+  for (const response of responses) {
+    for (const option of response.options) {
+      const list = byDestination.get(option.destination.code);
+      if (list) list.push(option);
+      else byDestination.set(option.destination.code, [option]);
+    }
+  }
+
+  const best: TuraTripOption[] = [];
+  for (const candidates of byDestination.values()) {
+    const withinBudget = candidates.filter((o) => o.total <= base.budget.amount);
+    const pool = withinBudget.length ? withinBudget : candidates;
+    best.push(
+      pool.reduce((longest, o) =>
+        o.nights > longest.nights || (o.nights === longest.nights && o.total < longest.total)
+          ? o
+          : longest,
+      ),
+    );
+  }
+  return best;
+}
+
 const DEFAULT_SAMPLE_QUERY: DiscoverQuery = {
   origin: 'Vienna',
   originCode: 'VIE',
@@ -519,10 +641,12 @@ export const liveTripService: TripService = {
   },
 
   async getSampleIdeas() {
-    const response = await callTura(toSearchRequest(DEFAULT_SAMPLE_QUERY));
-    const ideas = await Promise.all(
-      response.options.slice(0, 6).map((o) => toTripIdea(o, DEFAULT_SAMPLE_QUERY)),
-    );
+    const options = await bestPerDestination(DEFAULT_SAMPLE_QUERY, SAMPLE_NIGHTS_CANDIDATES);
+    const withinBudget = options.filter((o) => o.total <= DEFAULT_SAMPLE_QUERY.budget.amount);
+    const ranked = (withinBudget.length ? withinBudget : options)
+      .sort((a, b) => a.total - b.total)
+      .slice(0, 6);
+    const ideas = await Promise.all(ranked.map((o) => toTripIdea(o, DEFAULT_SAMPLE_QUERY)));
     return rememberAll(ideas);
   },
 
