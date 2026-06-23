@@ -5,9 +5,9 @@
 // src/app/api/tura/search/route.ts). Its request/response shapes are
 // completely different from ours (see src/lib/tura/types.ts), so this file
 // is the translation layer: only `discoverTrips`/`getSampleIdeas` are
-// tura-backed (that's its actual value — picking *where*); everything else
-// (destinations list, manual stays/activities/flights, trip detail) has no
-// equivalent in tura yet and falls back to the existing mock content.
+// tura-backed (that's its actual value — picking *where*); manual planning
+// (destinations list, stays/activities/flights, trip detail by cold id) has
+// no equivalent in tura yet and returns empty rather than invented content.
 import type {
   CostBreakdown,
   DiscoverQuery,
@@ -20,8 +20,6 @@ import type {
   TripService,
   VibeId,
 } from './types';
-import { mockTripService } from './tripService';
-import { mockLatency, nightsBetween } from '@/lib/utils';
 
 // ── tura's own contract (mirrored from its lib/types.ts) ───────────────────
 
@@ -455,16 +453,18 @@ function addDays(iso: string, days: number): string {
 }
 
 function toSearchRequest(query: DiscoverQuery): TuraSearchRequest {
-  const nights = Math.max(1, nightsBetween(query.dates.start, query.dates.end));
-  // tura derives nights as durationDays - 1, so this is the inverse.
-  const durationDays = Math.min(30, nights + 1);
+  const durationDays = Math.min(30, Math.max(1, Math.round(query.durationDays)));
+  const nights = durationDays - 1;
   // tura needs a search window at least as wide as the trip itself to find
-  // any start date inside it. Fixed dates get exactly that one window
-  // (a single possible start); flexible dates get a few extra weeks of
-  // room so tura's date-shifting savings logic has something to work with.
+  // any start date inside it. Fixed dates get exactly that one window,
+  // widened just enough to fit the requested trip length if the picked
+  // window was narrower (a single possible start); flexible dates get a few
+  // extra weeks of room so tura's date-shifting savings logic has something
+  // to work with.
+  const minEnd = addDays(query.dates.start, nights);
   const window = query.datesFlexible
     ? { from: query.dates.start, to: addDays(query.dates.start, Math.max(nights + 28, 35)) }
-    : { from: query.dates.start, to: query.dates.end };
+    : { from: query.dates.start, to: query.dates.end > minEnd ? query.dates.end : minEnd };
   return {
     origin: originCode(query),
     dateWindows: [window],
@@ -734,6 +734,7 @@ const DEFAULT_SAMPLE_QUERY: DiscoverQuery = {
   // pick the cheapest dates, without making the sample trip itself long.
   dates: { start: addDays(new Date().toISOString().slice(0, 10), 14), end: addDays(new Date().toISOString().slice(0, 10), 20) },
   datesFlexible: true,
+  durationDays: 6,
   travelers: 2,
   vibes: ['budget'],
 };
@@ -757,17 +758,22 @@ export const liveTripService: TripService = {
 
   async getTripById(id) {
     const cached = tripCache.get(id);
-    if (cached) {
-      await mockLatency(150, 350);
-      return genericDetail(cached);
-    }
-    return mockTripService.getTripById(id);
+    return cached ? genericDetail(cached) : null;
   },
 
-  // Manual planning has no tura equivalent yet (no stays/activities catalog,
-  // no static destination list) — these stay on curated mock content.
-  listDestinations: mockTripService.listDestinations,
-  getStays: mockTripService.getStays,
-  getActivities: mockTripService.getActivities,
-  getFlights: mockTripService.getFlights,
+  // Manual planning (destination picker, stays, activities, flights) has no
+  // tura equivalent yet — no live catalog exists for these, so they return
+  // empty rather than falling back to invented placeholder data.
+  async listDestinations() {
+    return [];
+  },
+  async getStays() {
+    return [];
+  },
+  async getActivities() {
+    return [];
+  },
+  async getFlights() {
+    return [];
+  },
 };

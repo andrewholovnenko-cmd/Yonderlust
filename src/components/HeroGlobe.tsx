@@ -164,12 +164,19 @@ function CobeGlobe({ points, activeIndex, interactive, bufferSize, onSelect }: C
   const cursorRef = useRef<HTMLCanvasElement | null>(null);
   const markerWrapRefs = useRef<(HTMLDivElement | null)[]>([]);
   const markerDotRefs = useRef<(HTMLSpanElement | null)[]>([]);
+  // markersFor() only depends on activeIndex/points, not on phi/theta — so it
+  // only needs to be rebuilt when one of those actually changes, not on every
+  // animation frame (60/sec). Rebuilding a 100+-entry array every frame for a
+  // value that's usually unchanged was the bulk of the globe's rendering lag.
+  const markersCacheRef = useRef(markersFor(activeIndex, points));
 
   useEffect(() => {
     activeRef.current = activeIndex;
+    markersCacheRef.current = markersFor(activeIndex, pointsRef.current);
   }, [activeIndex]);
   useEffect(() => {
     pointsRef.current = points;
+    markersCacheRef.current = markersFor(activeRef.current, points);
   }, [points]);
   useEffect(() => {
     sizeRef.current = bufferSize;
@@ -242,7 +249,7 @@ function CobeGlobe({ points, activeIndex, interactive, bufferSize, onSelect }: C
         // While focused, the WebGL dots are hidden in favour of the
         // hoverable/clickable DOM pins positioned below; inline mode keeps
         // the small cycling-highlight dots as before.
-        markers: interactiveRef.current ? [] : markersFor(activeRef.current, pointsRef.current),
+        markers: interactiveRef.current ? [] : markersCacheRef.current,
       });
 
       if (interactiveRef.current) {

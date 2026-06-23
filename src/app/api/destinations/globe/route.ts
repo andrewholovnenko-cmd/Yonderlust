@@ -14,6 +14,12 @@ export interface GlobePoint {
 
 const placeholderImage = (seed: string) => `https://picsum.photos/seed/yl-${seed}/240/240`;
 
+// Wikipedia lookups never change for a given city, so cache them in-memory
+// for the life of the server process — without this, every single homepage
+// load re-fetched ~100+ Wikipedia pages serially-ish, which is what made the
+// globe feel laggy (slow first paint, then a sudden swap to 100+ markers).
+const imageCache = new Map<string, string>();
+
 async function wikiImage(topic: string): Promise<string | null> {
   try {
     const res = await fetch(
@@ -29,7 +35,11 @@ async function wikiImage(topic: string): Promise<string | null> {
 }
 
 async function imageFor(code: string, city: string): Promise<string> {
-  return (await wikiImage(city)) ?? placeholderImage(code.toLowerCase());
+  const cached = imageCache.get(code);
+  if (cached) return cached;
+  const image = (await wikiImage(city)) ?? placeholderImage(code.toLowerCase());
+  imageCache.set(code, image);
+  return image;
 }
 
 /**
@@ -64,7 +74,7 @@ export async function GET() {
       .select('code, city, country, lat, lon, cheapest_price')
       .not('lat', 'is', null)
       .order('created_at', { ascending: false })
-      .limit(200);
+      .limit(60);
     discovered = await Promise.all(
       (data ?? []).map(async (row) => ({
         id: row.code as string,
@@ -78,5 +88,11 @@ export async function GET() {
   }
 
   const points = [...curated.filter((p): p is GlobePoint => p !== null), ...discovered];
-  return NextResponse.json({ points });
+  // CDN-cached for 5 minutes (refreshed in the background after) — the point
+  // list only grows when someone runs a new search, so most homepage loads
+  // can be served instantly from cache instead of re-resolving images.
+  return NextResponse.json(
+    { points },
+    { headers: { 'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=600' } },
+  );
 }

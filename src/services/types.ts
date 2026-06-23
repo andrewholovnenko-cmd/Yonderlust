@@ -178,8 +178,13 @@ export interface DiscoverQuery {
   originCode?: string;
   /** Total trip budget for the whole party. */
   budget: Money;
+  /** Earliest/latest dates the trip could happen within — a search window,
+   * not necessarily the trip's own start/end (see `durationDays`). */
   dates: DateRange;
   datesFlexible: boolean;
+  /** Trip length in days. 1 = a day trip (arrive and leave the same day, no
+   * hotel) rather than implicitly derived from the dates window. */
+  durationDays: number;
   travelers: number;
   vibes: VibeId[];
   notes?: string;

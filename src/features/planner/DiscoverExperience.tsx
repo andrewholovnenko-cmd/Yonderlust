@@ -47,6 +47,7 @@ export function DiscoverExperience() {
         ideas={data ?? []}
         isError={isError}
         onReset={() => setQuery(null)}
+        onAdjustQuery={(patch) => setQuery((q) => (q ? { ...q, ...patch } : q))}
       />
     </Container>
   );

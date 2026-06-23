@@ -7,7 +7,7 @@ import type { DiscoverQuery, TripIdea } from '@/services/types';
 import { TripCard } from '@/components/trip/TripCard';
 import { Button } from '@/components/ui/Button';
 import { vibeLabel } from '@/lib/vibes';
-import { cn, formatMoney, nightsBetween } from '@/lib/utils';
+import { cn, formatMoney } from '@/lib/utils';
 
 type Sort = 'match' | 'price' | 'flight';
 
@@ -22,9 +22,10 @@ interface ResultsBoardProps {
   ideas: TripIdea[];
   isError: boolean;
   onReset: () => void;
+  onAdjustQuery: (patch: Partial<DiscoverQuery>) => void;
 }
 
-export function ResultsBoard({ query, ideas, isError, onReset }: ResultsBoardProps) {
+export function ResultsBoard({ query, ideas, isError, onReset, onAdjustQuery }: ResultsBoardProps) {
   const [sort, setSort] = useState<Sort>('match');
   const [withinBudget, setWithinBudget] = useState(false);
 
@@ -41,7 +42,7 @@ export function ResultsBoard({ query, ideas, isError, onReset }: ResultsBoardPro
 
   const summaryBits = [
     `from ${query.origin}`,
-    `${nightsBetween(query.dates.start, query.dates.end)}-day window`,
+    query.durationDays === 1 ? 'day trip' : `${query.durationDays}-day trip`,
     `~${formatMoney(query.budget.amount)}`,
     `${query.travelers} travellers`,
     ...(query.vibes.length ? [query.vibes.map(vibeLabel).join(', ').toLowerCase()] : []),
@@ -91,10 +92,49 @@ export function ResultsBoard({ query, ideas, isError, onReset }: ResultsBoardPro
 
       {isError ? (
         <p className="text-ink-2">Something went wrong finding trips. Please start over.</p>
+      ) : ideas.length === 0 ? (
+        <div className="rounded-xl border border-line bg-surface p-10 text-center">
+          <h3 className="font-serif text-xl">No trips for these exact dates</h3>
+          <p className="mt-2 text-ink-2">
+            {query.datesFlexible
+              ? "We couldn't find anything even with flexible dates. Try a different month or origin."
+              : 'Try letting your dates shift by a few weeks — destinations are often much cheaper just a little earlier or later.'}
+          </p>
+          {!query.datesFlexible && (
+            <Button className="mt-5" onClick={() => onAdjustQuery({ datesFlexible: true })}>
+              Search with flexible dates
+            </Button>
+          )}
+        </div>
       ) : list.length === 0 ? (
         <div className="rounded-xl border border-line bg-surface p-10 text-center">
           <h3 className="font-serif text-xl">No trips within that budget</h3>
-          <p className="mt-2 text-ink-2">Turn off the budget filter or raise your budget a little.</p>
+          {(() => {
+            const cheapest = Math.min(...ideas.map((i) => i.cost.total.amount));
+            const extra = cheapest - query.budget.amount;
+            return extra > 0 ? (
+              <p className="mt-2 text-ink-2">
+                The cheapest option we found is {formatMoney(cheapest)} — that's{' '}
+                {formatMoney(extra)} more than your budget.
+              </p>
+            ) : (
+              <p className="mt-2 text-ink-2">Turn off the budget filter to see what's available.</p>
+            );
+          })()}
+          <div className="mt-5 flex flex-wrap justify-center gap-3">
+            <Button variant="outline" onClick={() => setWithinBudget(false)}>
+              See it anyway
+            </Button>
+            <Button
+              onClick={() =>
+                onAdjustQuery({
+                  budget: { ...query.budget, amount: Math.ceil(Math.min(...ideas.map((i) => i.cost.total.amount)) / 10) * 10 },
+                })
+              }
+            >
+              Raise my budget
+            </Button>
+          </div>
         </div>
       ) : (
         <motion.div

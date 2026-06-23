@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { motion } from 'framer-motion';
 import { useQuery } from '@tanstack/react-query';
 import { BedDouble, Camera, Check, Minus, Pencil, Plane, Plus, Wallet } from 'lucide-react';
@@ -116,30 +117,44 @@ export function ManualPlanner({ initialDestinationId }: { initialDestinationId: 
             Already have a place in mind? Pick it and assemble the trip to your budget.
           </p>
         </header>
-        <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-          {destinationsQ.isLoading
-            ? Array.from({ length: 6 }).map((_, i) => <TripCardSkeleton key={i} />)
-            : destinationsQ.data?.map((d) => (
-                <button
-                  key={d.id}
-                  type="button"
-                  onClick={() => chooseDestination(d.id)}
-                  className="group overflow-hidden rounded-lg border border-line bg-surface text-left shadow-soft transition-all duration-300 ease-out-soft hover:-translate-y-1 hover:shadow-lift"
-                >
-                  <Photo
-                    src={d.image}
-                    alt={d.city}
-                    className="aspect-[4/3]"
-                    sizes="(max-width: 768px) 100vw, 360px"
-                  />
-                  <div className="p-5">
-                    <h3 className="font-serif text-xl">{d.city}</h3>
-                    <p className="text-sm text-ink-3">{d.country}</p>
-                    <p className="mt-2 line-clamp-2 text-sm text-ink-2">{d.blurb}</p>
-                  </div>
-                </button>
-              ))}
-        </div>
+        {destinationsQ.isLoading ? (
+          <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <TripCardSkeleton key={i} />
+            ))}
+          </div>
+        ) : destinationsQ.data && destinationsQ.data.length > 0 ? (
+          <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+            {destinationsQ.data.map((d) => (
+              <button
+                key={d.id}
+                type="button"
+                onClick={() => chooseDestination(d.id)}
+                className="group overflow-hidden rounded-lg border border-line bg-surface text-left shadow-soft transition-all duration-300 ease-out-soft hover:-translate-y-1 hover:shadow-lift"
+              >
+                <Photo
+                  src={d.image}
+                  alt={d.city}
+                  className="aspect-[4/3]"
+                  sizes="(max-width: 768px) 100vw, 360px"
+                />
+                <div className="p-5">
+                  <h3 className="font-serif text-xl">{d.city}</h3>
+                  <p className="text-sm text-ink-3">{d.country}</p>
+                  <p className="mt-2 line-clamp-2 text-sm text-ink-2">{d.blurb}</p>
+                </div>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <p className="rounded-lg border border-line bg-surface p-6 text-ink-2">
+            Manual destination picking isn&apos;t available yet — use{' '}
+            <Link href="/discover" className="text-accent underline">
+              Discover
+            </Link>{' '}
+            to search real trips instead.
+          </p>
+        )}
       </Container>
     );
   }

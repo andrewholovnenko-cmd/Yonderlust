@@ -41,14 +41,24 @@ export function nightsBetween(startISO: string, endISO: string): number {
   return Math.max(0, Math.round(ms / 86_400_000));
 }
 
+/** "2026-07-04" for a Date, in local time (not UTC). */
+export function isoDate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+/** Adds (or subtracts, if negative) whole days to an ISO date string. */
+export function addIsoDays(iso: string, days: number): string {
+  const d = new Date(iso + 'T00:00:00');
+  d.setDate(d.getDate() + days);
+  return isoDate(d);
+}
+
 /** Promise-based delay, used by the mock service to exercise loading states. */
 export function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** Deterministic-ish pseudo delay within a range, for realistic mock latency. */
-export function mockLatency(min = 600, max = 1200): Promise<void> {
-  return delay(Math.round(min + Math.random() * (max - min)));
 }
 
 /** Icon for a transport leg: plane for flights, bus/train for ground legs. */
